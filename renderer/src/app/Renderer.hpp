@@ -1,17 +1,22 @@
 #pragma once
 
+#include "Camera.hpp"
+#include "GBufferPass.hpp"
+
+#include <memory>
+
 struct GLFWwindow;
 
 namespace MTL {
     class Device;
     class CommandQueue;
     class Library;
-    class RenderPipelineState;
-    class Buffer;
 }
 namespace CA { class MetalLayer; }
 
 namespace rs {
+
+class Mesh;
 
 class Renderer {
 public:
@@ -23,20 +28,27 @@ public:
 
     void drawFrame();
 
+    Camera&       camera()       { return m_camera; }
+    const Camera& camera() const { return m_camera; }
+
+    void setDebugBlit(GBufferPass::DebugBlit b) { m_debugBlit = b; }
+
     const char* deviceName() const;
 
 private:
     void loadLibrary();
-    void buildPipeline();
-    void buildVertexBuffer();
 
-    GLFWwindow*                m_window   = nullptr;
-    MTL::Device*               m_device   = nullptr;
-    MTL::CommandQueue*         m_queue    = nullptr;
-    CA::MetalLayer*            m_layer    = nullptr;
-    MTL::Library*              m_library  = nullptr;
-    MTL::RenderPipelineState*  m_pipeline = nullptr;
-    MTL::Buffer*               m_vbuf     = nullptr;
+    GLFWwindow*        m_window  = nullptr;
+    MTL::Device*       m_device  = nullptr;
+    MTL::CommandQueue* m_queue   = nullptr;
+    CA::MetalLayer*    m_layer   = nullptr;
+    MTL::Library*      m_library = nullptr;
+
+    std::unique_ptr<GBufferPass> m_gbuffer;
+    std::unique_ptr<Mesh>        m_mesh;
+    Camera                       m_camera;
+
+    GBufferPass::DebugBlit m_debugBlit = GBufferPass::DebugBlit::RGB;
 };
 
 }

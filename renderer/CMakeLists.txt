@@ -50,11 +50,16 @@ endif()
 add_executable(renderer
     src/main.cpp
     src/metal_impl.cpp
+    src/app/Renderer.cpp
+    src/app/GBufferPass.cpp
+    src/app/Camera.cpp
+    src/app/Mesh.cpp
     src/app/CocoaBridge.mm
 )
 
 target_include_directories(renderer PRIVATE
     src
+    shaders
     ${METAL_CPP_DIR}
 )
 
@@ -103,7 +108,9 @@ if(RENDER_SR_BUILD_SHADERS)
         set(AIR_FILE ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.air)
         add_custom_command(
             OUTPUT ${AIR_FILE}
-            COMMAND xcrun -sdk macosx metal -c ${SHADER} -o ${AIR_FILE}
+            COMMAND xcrun -sdk macosx metal
+                    -I ${CMAKE_CURRENT_SOURCE_DIR}/shaders
+                    -c ${SHADER} -o ${AIR_FILE}
             DEPENDS ${SHADER}
             COMMENT "Compiling shader ${SHADER_NAME}.metal"
             VERBATIM
