@@ -1,0 +1,4 @@
+sdk_version=26.5
+macos_version=26.3.1
+recorded_at=2026-06-04T09:35:24Z
+note=Headers were already present when fetch_metal_cpp.sh first ran.
