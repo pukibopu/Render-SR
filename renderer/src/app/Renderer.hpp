@@ -2,8 +2,14 @@
 
 struct GLFWwindow;
 
-namespace MTL { class Device; class CommandQueue; }
-namespace CA  { class MetalLayer; }
+namespace MTL {
+    class Device;
+    class CommandQueue;
+    class Library;
+    class RenderPipelineState;
+    class Buffer;
+}
+namespace CA { class MetalLayer; }
 
 namespace rs {
 
@@ -20,10 +26,17 @@ public:
     const char* deviceName() const;
 
 private:
-    GLFWwindow*        m_window = nullptr;
-    MTL::Device*       m_device = nullptr;
-    MTL::CommandQueue* m_queue  = nullptr;
-    CA::MetalLayer*    m_layer  = nullptr;
+    void loadLibrary();
+    void buildPipeline();
+    void buildVertexBuffer();
+
+    GLFWwindow*                m_window   = nullptr;
+    MTL::Device*               m_device   = nullptr;
+    MTL::CommandQueue*         m_queue    = nullptr;
+    CA::MetalLayer*            m_layer    = nullptr;
+    MTL::Library*              m_library  = nullptr;
+    MTL::RenderPipelineState*  m_pipeline = nullptr;
+    MTL::Buffer*               m_vbuf     = nullptr;
 };
 
 }
