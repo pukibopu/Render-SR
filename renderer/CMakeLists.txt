@@ -46,6 +46,15 @@ if(NOT EXISTS "${METAL_CPP_DIR}/Metal/Metal.hpp")
         "then re-run cmake.")
 endif()
 
+# --- stb_image_write --------------------------------------------------------
+set(STB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb")
+if(NOT EXISTS "${STB_DIR}/stb_image_write.h")
+    message(FATAL_ERROR
+        "stb_image_write.h not found at:\n"
+        "    ${STB_DIR}/stb_image_write.h\n"
+        "Run renderer/scripts/fetch_stb.sh, then re-run cmake.")
+endif()
+
 # --- Renderer executable ----------------------------------------------------
 add_executable(renderer
     src/main.cpp
@@ -55,12 +64,16 @@ add_executable(renderer
     src/app/Camera.cpp
     src/app/Mesh.cpp
     src/app/CocoaBridge.mm
+    src/io/NpyWriter.cpp
+    src/io/StbWriter.cpp
+    src/io/FrameWriter.cpp
 )
 
 target_include_directories(renderer PRIVATE
     src
     shaders
     ${METAL_CPP_DIR}
+    ${STB_DIR}
 )
 
 target_link_libraries(renderer PRIVATE
@@ -80,6 +93,12 @@ target_compile_options(renderer PRIVATE
 
 set_source_files_properties(src/app/CocoaBridge.mm PROPERTIES
     COMPILE_FLAGS "-fobjc-arc"
+)
+
+# stb_image_write.h is a vendored third-party single-header library; quiet the
+# warnings it produces so they don't drown actual diagnostics.
+set_source_files_properties(src/io/StbWriter.cpp PROPERTIES
+    COMPILE_FLAGS "-Wno-missing-field-initializers -Wno-deprecated-declarations"
 )
 
 # --- Shaders -> default.metallib --------------------------------------------

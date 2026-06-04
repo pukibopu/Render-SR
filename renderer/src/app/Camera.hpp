@@ -20,6 +20,15 @@ public:
     simd_float4x4 proj() const;
     simd_float3   eye()  const;
 
+    simd_float3 target()    const { return m_target; }
+    float       azimuth()   const { return m_azimuth; }
+    float       elevation() const { return m_elevation; }
+    float       distance()  const { return m_distance; }
+    float       fovY()      const { return m_fovY; }
+    float       aspect()    const { return m_aspect; }
+    float       nearPlane() const { return m_near; }
+    float       farPlane()  const { return m_far; }
+
 private:
     simd_float3 m_target   {0.f, 0.f, 0.f};
     float       m_azimuth   = 0.0f;

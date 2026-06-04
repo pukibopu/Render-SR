@@ -10,6 +10,7 @@ namespace MTL {
     class DepthStencilState;
     class SamplerState;
     class Texture;
+    class Buffer;
 }
 
 struct Uniforms;
@@ -57,6 +58,23 @@ public:
                                DebugBlit which,
                                float depthMin, float depthMax) const;
 
+    // Copy all four output attachments (low-res RGB/depth/normal + high-res
+    // RGB) from private textures into host-visible staging buffers. The
+    // staging buffers are valid to read after the command buffer that this
+    // call was encoded onto has completed (waitUntilCompleted on caller).
+    void encodeReadback(MTL::CommandBuffer* cmd) const;
+
+    // Host pointers into the staging buffers. Layouts are tightly packed,
+    // row-major, no row padding:
+    //   lowRGBHost   : uint8_t[lowH * lowW * 4]   (RGBA8, sRGB-encoded)
+    //   lowDepthHost : float  [lowH * lowW]
+    //   lowNormalHalfHost : uint16_t[lowH * lowW * 4] (RGBA16Float)
+    //   highRGBHost  : uint8_t[highH * highW * 4] (RGBA8, sRGB-encoded)
+    const std::uint8_t*  lowRGBHost()        const;
+    const float*         lowDepthHost()      const;
+    const std::uint16_t* lowNormalHalfHost() const;
+    const std::uint8_t*  highRGBHost()       const;
+
     uint32_t lowResWidth () const { return m_lowW; }
     uint32_t lowResHeight() const { return m_lowH; }
     uint32_t highResWidth () const { return m_highW; }
@@ -69,6 +87,7 @@ private:
     void buildSampler();
     void buildLowResTextures();
     void buildHighResTextures();
+    void buildReadbackBuffers();
 
     MTL::Device*  m_device  = nullptr;
     MTL::Library* m_library = nullptr;
@@ -94,6 +113,12 @@ private:
     // High-res attachments
     MTL::Texture* m_highRGB = nullptr;
     MTL::Texture* m_highZ   = nullptr;     // Depth32Float, test-only
+
+    // Host-visible staging buffers for readback.
+    MTL::Buffer* m_lowRGBBuf    = nullptr;
+    MTL::Buffer* m_lowDepthBuf  = nullptr;
+    MTL::Buffer* m_lowNormalBuf = nullptr;
+    MTL::Buffer* m_highRGBBuf   = nullptr;
 
     uint32_t m_lowW = 0,  m_lowH = 0;
     uint32_t m_highW = 0, m_highH = 0;

@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <optional>
 #include <string>
 
@@ -12,6 +13,13 @@ namespace {
 
 constexpr int kInitialWidth  = 1280;
 constexpr int kInitialHeight = 720;
+
+struct Args {
+    bool headless = false;
+    int  frames   = 1;
+    std::filesystem::path out = "output_buffers";
+    rs::GBufferPass::DebugBlit debugBlit = rs::GBufferPass::DebugBlit::RGB;
+};
 
 void glfwErrorCallback(int code, const char* description) {
     std::fprintf(stderr, "glfw error %d: %s\n", code, description);
@@ -46,46 +54,97 @@ std::optional<rs::GBufferPass::DebugBlit> parseDebugBlit(const char* v) {
 void printUsage(const char* argv0) {
     std::fprintf(stderr,
         "usage: %s [--debug-blit {rgb|depth|normal}]\n"
+        "       %s --headless --frames N [--out PATH]\n"
+        "\n"
         "  --debug-blit  which low-res G-buffer attachment to display on screen\n"
-        "                (defaults to rgb)\n",
-        argv0);
+        "                (defaults to rgb; ignored in headless mode)\n"
+        "  --headless    render without a window; write each frame to PATH\n"
+        "  --frames N    number of frames to render in headless mode\n"
+        "  --out PATH    output directory root (defaults to ./output_buffers)\n",
+        argv0, argv0);
 }
 
-}
-
-int main(int argc, char** argv) {
-    rs::GBufferPass::DebugBlit debugBlit = rs::GBufferPass::DebugBlit::RGB;
-
+bool parseArgs(int argc, char** argv, Args& out_args) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
-        if (a == "--debug-blit") {
+        auto next = [&](const char* flag) -> const char* {
             if (i + 1 >= argc) {
-                std::fprintf(stderr, "error: --debug-blit requires an argument\n");
-                printUsage(argv[0]);
-                return 2;
+                std::fprintf(stderr, "error: %s requires an argument\n", flag);
+                return nullptr;
             }
-            auto parsed = parseDebugBlit(argv[++i]);
+            return argv[++i];
+        };
+        if (a == "--debug-blit") {
+            const char* v = next("--debug-blit");
+            if (!v) return false;
+            auto parsed = parseDebugBlit(v);
             if (!parsed) {
                 std::fprintf(stderr,
-                    "error: --debug-blit expects rgb|depth|normal, got '%s'\n", argv[i]);
-                return 2;
+                    "error: --debug-blit expects rgb|depth|normal, got '%s'\n", v);
+                return false;
             }
-            debugBlit = *parsed;
+            out_args.debugBlit = *parsed;
+        } else if (a == "--headless") {
+            out_args.headless = true;
+        } else if (a == "--frames") {
+            const char* v = next("--frames");
+            if (!v) return false;
+            char* end = nullptr;
+            long n = std::strtol(v, &end, 10);
+            if (!end || *end != '\0' || n <= 0) {
+                std::fprintf(stderr, "error: --frames expects a positive integer, got '%s'\n", v);
+                return false;
+            }
+            out_args.frames = static_cast<int>(n);
+        } else if (a == "--out") {
+            const char* v = next("--out");
+            if (!v) return false;
+            out_args.out = std::filesystem::path(v);
         } else if (a == "--help" || a == "-h") {
             printUsage(argv[0]);
-            return 0;
+            std::exit(0);
         } else {
             std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
-            printUsage(argv[0]);
-            return 2;
+            return false;
         }
     }
-
-    glfwSetErrorCallback(glfwErrorCallback);
-
-    if (!glfwInit()) {
-        return 1;
+    if (!out_args.headless && out_args.frames != 1) {
+        std::fprintf(stderr, "error: --frames only applies in --headless mode\n");
+        return false;
     }
+    return true;
+}
+
+int runHeadless(const Args& args) {
+    rs::Renderer renderer(nullptr);
+    std::printf("Metal device: %s\n", renderer.deviceName());
+    std::printf("Writing %d frame%s under: %s\n",
+                args.frames, args.frames == 1 ? "" : "s",
+                args.out.string().c_str());
+
+    rs::Camera& cam = renderer.camera();
+    // Deterministic orbit: full circle across N frames so consecutive frames
+    // are spatially distinct (so the output isn't just N copies of one pose).
+    const float az0  = cam.azimuth();
+    const float step = (args.frames > 1)
+        ? (6.2831853f / static_cast<float>(args.frames))
+        : 0.0f;
+
+    for (int i = 0; i < args.frames; ++i) {
+        // Reset to deterministic pose for this frame index.
+        cam.setOrbit(/*target*/ {0.f, 0.f, 0.f},
+                     /*azimuth*/   az0 + step * static_cast<float>(i),
+                     /*elevation*/ 0.35f,
+                     /*distance*/  4.0f);
+        renderer.dumpFrame(args.out, i);
+    }
+    std::printf("Done.\n");
+    return 0;
+}
+
+int runWindowed(const Args& args) {
+    glfwSetErrorCallback(glfwErrorCallback);
+    if (!glfwInit()) return 1;
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE,  GLFW_TRUE);
@@ -101,17 +160,15 @@ int main(int argc, char** argv) {
     int exit_code = 0;
     try {
         rs::Renderer renderer(window);
-        renderer.setDebugBlit(debugBlit);
+        renderer.setDebugBlit(args.debugBlit);
         std::printf("Metal device: %s\n", renderer.deviceName());
 
         double last = glfwGetTime();
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
-
             const double now = glfwGetTime();
             const float  dt  = (float)(now - last);
             last = now;
-
             pollCameraInput(window, renderer.camera(), dt);
             renderer.drawFrame();
         }
@@ -123,4 +180,20 @@ int main(int argc, char** argv) {
     glfwDestroyWindow(window);
     glfwTerminate();
     return exit_code;
+}
+
+}
+
+int main(int argc, char** argv) {
+    Args args;
+    if (!parseArgs(argc, argv, args)) {
+        printUsage(argv[0]);
+        return 2;
+    }
+    try {
+        return args.headless ? runHeadless(args) : runWindowed(args);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "fatal: %s\n", e.what());
+        return 1;
+    }
 }

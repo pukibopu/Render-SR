@@ -17,6 +17,10 @@ constexpr MTL::PixelFormat kDepthFormat  = MTL::PixelFormatR32Float;       // li
 constexpr MTL::PixelFormat kNormalFormat = MTL::PixelFormatRGBA16Float;
 constexpr MTL::PixelFormat kZFormat      = MTL::PixelFormatDepth32Float;   // depth-test
 
+constexpr std::size_t kRGBBytesPerPixel    = 4;   // RGBA8
+constexpr std::size_t kDepthBytesPerPixel  = 4;   // R32F
+constexpr std::size_t kNormalBytesPerPixel = 8;   // RGBA16F
+
 NS::String* nsStr(const char* s) {
     return NS::String::string(s, NS::UTF8StringEncoding);
 }
@@ -76,9 +80,15 @@ GBufferPass::GBufferPass(MTL::Device* device,
     buildBlitPipelines(swapchainPixelFormat);
     buildLowResTextures();
     buildHighResTextures();
+    buildReadbackBuffers();
 }
 
 GBufferPass::~GBufferPass() {
+    if (m_lowRGBBuf)    { m_lowRGBBuf->release();    m_lowRGBBuf    = nullptr; }
+    if (m_lowDepthBuf)  { m_lowDepthBuf->release();  m_lowDepthBuf  = nullptr; }
+    if (m_lowNormalBuf) { m_lowNormalBuf->release(); m_lowNormalBuf = nullptr; }
+    if (m_highRGBBuf)   { m_highRGBBuf->release();   m_highRGBBuf   = nullptr; }
+
     if (m_lowRGB)    { m_lowRGB->release();    m_lowRGB    = nullptr; }
     if (m_lowDepth)  { m_lowDepth->release();  m_lowDepth  = nullptr; }
     if (m_lowNormal) { m_lowNormal->release(); m_lowNormal = nullptr; }
@@ -222,6 +232,20 @@ void GBufferPass::buildHighResTextures() {
     }
 }
 
+void GBufferPass::buildReadbackBuffers() {
+    const std::size_t lowPx  = std::size_t(m_lowW)  * std::size_t(m_lowH);
+    const std::size_t highPx = std::size_t(m_highW) * std::size_t(m_highH);
+
+    const MTL::ResourceOptions opts = MTL::ResourceStorageModeShared;
+    m_lowRGBBuf    = m_device->newBuffer(lowPx  * kRGBBytesPerPixel,    opts);
+    m_lowDepthBuf  = m_device->newBuffer(lowPx  * kDepthBytesPerPixel,  opts);
+    m_lowNormalBuf = m_device->newBuffer(lowPx  * kNormalBytesPerPixel, opts);
+    m_highRGBBuf   = m_device->newBuffer(highPx * kRGBBytesPerPixel,    opts);
+    if (!m_lowRGBBuf || !m_lowDepthBuf || !m_lowNormalBuf || !m_highRGBBuf) {
+        throw std::runtime_error("failed to allocate readback staging buffers");
+    }
+}
+
 void GBufferPass::encodeLowRes(MTL::CommandBuffer* cmd,
                                const Mesh& mesh, const Uniforms& u) const
 {
@@ -307,6 +331,42 @@ void GBufferPass::encodeHighRes(MTL::CommandBuffer* cmd,
         NS::UInteger(0));
     enc->endEncoding();
     desc->release();
+}
+
+void GBufferPass::encodeReadback(MTL::CommandBuffer* cmd) const {
+    MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
+
+    auto copyTexToBuf = [&](MTL::Texture* tex, MTL::Buffer* buf,
+                            uint32_t w, uint32_t h, std::size_t bpp) {
+        const NS::UInteger bytesPerRow   = NS::UInteger(w) * bpp;
+        const NS::UInteger bytesPerImage = bytesPerRow * NS::UInteger(h);
+        blit->copyFromTexture(
+            tex, /*slice*/ 0, /*level*/ 0,
+            MTL::Origin(0, 0, 0),
+            MTL::Size(w, h, 1),
+            buf, /*offset*/ 0,
+            bytesPerRow, bytesPerImage);
+    };
+
+    copyTexToBuf(m_lowRGB,    m_lowRGBBuf,    m_lowW,  m_lowH,  kRGBBytesPerPixel);
+    copyTexToBuf(m_lowDepth,  m_lowDepthBuf,  m_lowW,  m_lowH,  kDepthBytesPerPixel);
+    copyTexToBuf(m_lowNormal, m_lowNormalBuf, m_lowW,  m_lowH,  kNormalBytesPerPixel);
+    copyTexToBuf(m_highRGB,   m_highRGBBuf,   m_highW, m_highH, kRGBBytesPerPixel);
+
+    blit->endEncoding();
+}
+
+const std::uint8_t* GBufferPass::lowRGBHost() const {
+    return static_cast<const std::uint8_t*>(m_lowRGBBuf->contents());
+}
+const float* GBufferPass::lowDepthHost() const {
+    return static_cast<const float*>(m_lowDepthBuf->contents());
+}
+const std::uint16_t* GBufferPass::lowNormalHalfHost() const {
+    return static_cast<const std::uint16_t*>(m_lowNormalBuf->contents());
+}
+const std::uint8_t* GBufferPass::highRGBHost() const {
+    return static_cast<const std::uint8_t*>(m_highRGBBuf->contents());
 }
 
 void GBufferPass::encodeBlitToSwapchain(MTL::CommandBuffer* cmd,
