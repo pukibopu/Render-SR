@@ -399,6 +399,63 @@ def validate_sample(s: dict,
             raise ValueError(f"normal: max |len-1| {max_dev:.4f} > {_NORMAL_MAX_TOL}")
 
 
+# --- input channel assembly (Phase 2.4a) ------------------------------------
+#
+# Build the network input tensor by stacking low-res channels in the *fixed*
+# canonical order [R, G, B, depth, Nx, Ny, Nz]. The depth slot always uses
+# `depth_norm` (the [0,1] map from Phase 2.3), never the raw eye-space depth —
+# raw `depth` stays in the sample dict for inspection/metrics but is never fed.
+#
+# Each mode is a contiguous-from-the-front subset of that order, so the RGB-only
+# (3ch) and rendering-aware (7ch) inputs are byte-identical in their shared
+# leading channels — the fair 3ch↔7ch comparison the project hinges on.
+#
+#   rgb_only         3ch  [R,G,B]
+#   rgb_depth        4ch  [R,G,B,depth_norm]
+#   rgb_normal       6ch  [R,G,B,Nx,Ny,Nz]
+#   rgb_depth_normal 7ch  [R,G,B,depth_norm,Nx,Ny,Nz]
+#
+# Paired crop/flip are a later sub-step (2.4b) and are deliberately not here.
+
+INPUT_MODES = ("rgb_only", "rgb_depth", "rgb_normal", "rgb_depth_normal")
+
+_MODE_CHANNELS = {
+    "rgb_only": 3,
+    "rgb_depth": 4,
+    "rgb_normal": 6,
+    "rgb_depth_normal": 7,
+}
+
+
+def assemble_input(s: dict, mode: str):
+    """Stack a loaded sample's low-res channels into the input tensor for `mode`.
+
+    Returns a float32 (C, lowH, lowW) array. C is 3/4/6/7 by mode. Channel order
+    is always [R,G,B,(depth_norm),(Nx,Ny,Nz)]; the depth channel is `depth_norm`.
+    """
+    import numpy as np
+
+    if mode not in INPUT_MODES:
+        raise ValueError(f"unknown input mode {mode!r}; expected one of {INPUT_MODES}")
+
+    rgb = s["rgb_low"]            # (3, H, W)
+    parts = [rgb]
+    if mode in ("rgb_depth", "rgb_depth_normal"):
+        if "depth_norm" not in s:
+            raise ValueError(f"mode {mode!r} needs depth_norm (run load_sample with normalisation)")
+        parts.append(s["depth_norm"])   # (1, H, W)
+    if mode in ("rgb_normal", "rgb_depth_normal"):
+        parts.append(s["normal"])       # (3, H, W)
+
+    x = np.ascontiguousarray(np.concatenate(parts, axis=0).astype(np.float32))
+
+    expected_c = _MODE_CHANNELS[mode]
+    _, h, w = rgb.shape
+    if x.shape != (expected_c, h, w):
+        raise ValueError(f"mode {mode!r}: assembled {x.shape}, expected {(expected_c, h, w)}")
+    return x
+
+
 # --- debug CLI --------------------------------------------------------------
 
 
@@ -487,6 +544,8 @@ def main(argv: list[str]) -> int:
                     help="load one sample's pixels and print a tensor summary")
     ap.add_argument("--index", type=int, default=0,
                     help="sample index to --load (default 0)")
+    ap.add_argument("--input-mode", default=None, choices=INPUT_MODES,
+                    help="also assemble + summarise the input tensor for this mode")
     args = ap.parse_args(argv)
 
     try:
@@ -511,6 +570,12 @@ def main(argv: list[str]) -> int:
             return 1
         print(f"\nloaded sample[{args.index}] = {man[args.index].stem}:")
         print(_tensor_summary(s))
+
+        if args.input_mode:
+            x = assemble_input(s, args.input_mode)
+            print(f"\ninput tensor (mode={args.input_mode}):")
+            print(f"  shape={tuple(x.shape)} dtype={x.dtype} "
+                  f"min={x.min():.4f} max={x.max():.4f}")
 
     return 0
 
