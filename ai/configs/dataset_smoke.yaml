@@ -19,4 +19,6 @@ dataset:
   transform_seed: 0              # base seed for the deterministic transform RNG
 
 smoke:
-  num_samples: 4                 # how many samples to load + summarise
+  num_samples: 4                 # how many samples to load + summarise (dataset_smoke)
+  batch_size: 2                  # DataLoader batch size (loader_smoke)
+  num_workers: 0                 # DataLoader workers (loader_smoke)
