@@ -1,0 +1,41 @@
+# Rendering-aware (7ch) full training config (Phase 4.2).
+#
+# Trains the rendering-aware model (SRUNet in_channels=7, input order
+# [R,G,B,depth_norm,Nx,Ny,Nz]) over the manifest's path-ID train/test split.
+# Run from the repo root:
+#   python -m ai.tools.train_rendering_aware --config ai/configs/train_rendering_aware.yaml
+# Point `data_root` at the directory holding manifest.json on this machine.
+#
+# FAIRNESS: every fairness-critical field below must match
+# ai/configs/train_rgb_baseline.yaml. The trainer enforces this with a
+# config-equality guard against `compare.baseline_config` and aborts on drift.
+# The only intended differences vs the baseline are: input_mode (fixed in code),
+# the model wrapper, checkpoint/log filenames, and the experiment name.
+
+experiment: rendering_aware
+
+paths:
+  data_root: output_buffers       # renderer output root (contains manifest.json)
+  output_dir: results             # per-epoch loss CSV is written here
+  checkpoint_dir: checkpoints      # last + best checkpoints written here
+
+compare:
+  baseline_config: ai/configs/train_rgb_baseline.yaml  # fairness reference
+
+dataset:
+  crop: [128, 256]                # MUST match baseline
+  hflip: true                     # MUST match baseline (val forces it off)
+  transform_seed: 0               # MUST match baseline
+  depth_range: null               # MUST match baseline; null = meta near/far
+                                  # (see Known issues: default range is flat)
+
+train:
+  seed: 0
+  epochs: 50
+  batch_size: 8
+  val_batch_size: 8
+  num_workers: 2
+  lr: 0.0005
+  weight_decay: 0.0001
+  eta_min: 0.00001                # cosine schedule floor
+  base: 32                        # backbone width (MUST match baseline)
