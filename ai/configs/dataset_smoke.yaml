@@ -1,0 +1,22 @@
+# Dataset smoke-test config (Phase 2.5).
+#
+# Paths are relative to the repo root — run tools from there:
+#   python -m ai.tools.dataset_smoke --config ai/configs/dataset_smoke.yaml
+# No machine-specific absolute paths: change `data_root` to wherever the
+# renderer output (the directory holding manifest.json) lives on this machine.
+
+paths:
+  data_root: output_buffers      # renderer output root (contains manifest.json)
+  output_dir: results            # run artifacts (used in Phase 3+)
+  checkpoint_dir: checkpoints     # model weights (used in Phase 3+)
+
+dataset:
+  split: train                   # train | test | all
+  input_mode: rgb_depth_normal   # rgb_only | rgb_depth | rgb_normal | rgb_depth_normal
+  depth_range: null              # [near, far] override, or null = meta camera near/far
+  crop: [128, 256]               # [H, W] low-res paired crop, or null for no crop
+  hflip: true                    # random paired horizontal flip (Nx negated)
+  transform_seed: 0              # base seed for the deterministic transform RNG
+
+smoke:
+  num_samples: 4                 # how many samples to load + summarise

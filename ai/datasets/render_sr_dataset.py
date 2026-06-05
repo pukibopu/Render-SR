@@ -456,6 +456,153 @@ def assemble_input(s: dict, mode: str):
     return x
 
 
+# --- paired transforms (Phase 2.4b) -----------------------------------------
+#
+# Geometric augmentation applied *identically* to every aligned buffer so the
+# pixel-alignment invariant survives (misalignment silently destroys the
+# experiment). All spatial ops are channel-agnostic except the horizontal flip
+# of a view-space normal, which must negate Nx (and only Nx): mirroring x in
+# screen space mirrors the x-component of the surface direction. Ny/Nz are
+# unchanged. This is the one place normals are not treated like generic data.
+#
+#   crop:  low-res box (top,left,h,w); the high-res target is cropped at the
+#          matching box * scale (default 2) so the pair stays pixel-exact.
+#   flip:  optional random horizontal flip; spatial reverse for rgb/depth,
+#          spatial reverse + negate Nx for normal.
+#
+# Determinism: pass a numpy Generator (make_rng(seed)) so a run is reproducible
+# and debuggable. Order is fixed as [R,G,B,depth_norm,Nx,Ny,Nz]; for an assembled
+# input tensor the Nx channel index is mode-dependent (see _nx_index).
+
+# Which buffers are cropped/flipped as plain spatial data vs. as normals.
+_GEOM_PLAIN = ("rgb_low", "depth", "depth_norm")  # cropped at low res, plain flip
+_GEOM_NORMAL = "normal"                            # plain crop, Nx-negating flip
+_GEOM_HIGH = "rgb_high"                            # cropped at low_box * scale
+
+
+def make_rng(seed: int | None):
+    """A numpy default_rng for deterministic, debuggable transforms."""
+    import numpy as np
+    return np.random.default_rng(seed)
+
+
+def random_crop_box(in_hw: tuple[int, int],
+                    crop_hw: tuple[int, int],
+                    rng) -> tuple[int, int, int, int]:
+    """Pick a (top, left, h, w) crop box uniformly inside ``in_hw``."""
+    ih, iw = in_hw
+    ch, cw = crop_hw
+    if ch > ih or cw > iw:
+        raise ValueError(f"crop {crop_hw} does not fit inside {in_hw}")
+    top = int(rng.integers(0, ih - ch + 1))
+    left = int(rng.integers(0, iw - cw + 1))
+    return (top, left, ch, cw)
+
+
+def crop_chw(a, top: int, left: int, h: int, w: int):
+    """Crop a (C,H,W) array; returns a contiguous view-copy."""
+    import numpy as np
+    return np.ascontiguousarray(a[:, top:top + h, left:left + w])
+
+
+def hflip_chw(a):
+    """Horizontal (width-axis) spatial flip of a (C,H,W) array."""
+    import numpy as np
+    return np.ascontiguousarray(a[:, :, ::-1])
+
+
+def hflip_normal_chw(normal):
+    """Horizontal flip of a view-space normal (3,H,W): mirror + negate Nx only."""
+    import numpy as np
+    out = np.ascontiguousarray(normal[:, :, ::-1])
+    out[0] = -out[0]   # Nx; Ny/Nz unchanged
+    return out
+
+
+def _nx_index(mode: str) -> int | None:
+    """Channel index of Nx in an assembled tensor for ``mode`` (None if no normal)."""
+    if mode == "rgb_normal":
+        return 3           # [R,G,B,Nx,Ny,Nz]
+    if mode == "rgb_depth_normal":
+        return 4           # [R,G,B,depth_norm,Nx,Ny,Nz]
+    return None            # rgb_only / rgb_depth carry no normal
+
+
+@dataclass(frozen=True)
+class PairedTransform:
+    """Paired random crop (+ optional random hflip) over aligned buffers.
+
+    ``crop_hw`` is the low-res crop size; the high-res target is cropped at
+    ``crop_hw * scale``. ``hflip`` enables a random horizontal flip (p=0.5).
+    """
+
+    crop_hw: tuple[int, int] | None = None
+    hflip: bool = False
+    scale: int = 2
+
+    def plan(self, low_hw: tuple[int, int], rng) -> dict:
+        """Decide the crop box + flip for one sample (the random draws)."""
+        if self.crop_hw is not None:
+            top, left, h, w = random_crop_box(low_hw, self.crop_hw, rng)
+        else:
+            top, left, h, w = 0, 0, low_hw[0], low_hw[1]
+        flip = bool(self.hflip and rng.random() < 0.5)
+        s = self.scale
+        return {
+            "low_box": (top, left, h, w),
+            "high_box": (top * s, left * s, h * s, w * s),
+            "flip": flip,
+            "scale": s,
+        }
+
+    def __call__(self, sample: dict, rng) -> tuple[dict, dict]:
+        """Return (transformed_sample, info). Non-spatial keys pass through."""
+        rgb_low = sample["rgb_low"]
+        low_hw = (rgb_low.shape[1], rgb_low.shape[2])
+        info = self.plan(low_hw, rng)
+        tl, ll, th, tw = info["low_box"]
+        ht, hl, hh, hw = info["high_box"]
+        flip = info["flip"]
+
+        out = dict(sample)  # shallow copy; replace spatial buffers below
+        for key in _GEOM_PLAIN:
+            if key in sample:
+                a = crop_chw(sample[key], tl, ll, th, tw)
+                out[key] = hflip_chw(a) if flip else a
+        if _GEOM_NORMAL in sample:
+            a = crop_chw(sample[_GEOM_NORMAL], tl, ll, th, tw)
+            out[_GEOM_NORMAL] = hflip_normal_chw(a) if flip else a
+        if _GEOM_HIGH in sample:
+            a = crop_chw(sample[_GEOM_HIGH], ht, hl, hh, hw)
+            out[_GEOM_HIGH] = hflip_chw(a) if flip else a
+
+        # depth_norm_stats no longer describes the cropped depth — recompute if
+        # we can, else drop it so nothing reads a stale summary.
+        if "depth" in out and "depth_norm" in out and "depth_norm_stats" in sample:
+            near = sample["depth_norm_stats"]["near"]
+            far = sample["depth_norm_stats"]["far"]
+            out["depth_norm_stats"] = _depth_norm_stats(out["depth"], out["depth_norm"], near, far)
+        else:
+            out.pop("depth_norm_stats", None)
+        return out, info
+
+
+def transform_input(x, mode: str, info: dict):
+    """Apply the same crop+flip (from PairedTransform.plan/__call__) to an
+    already-assembled input tensor, negating Nx for the mode if a flip happened.
+
+    Equivalent to transforming the named buffers then re-assembling.
+    """
+    tl, ll, th, tw = info["low_box"]
+    x = crop_chw(x, tl, ll, th, tw)
+    if info["flip"]:
+        x = hflip_chw(x)
+        nx = _nx_index(mode)
+        if nx is not None:
+            x[nx] = -x[nx]
+    return x
+
+
 # --- debug CLI --------------------------------------------------------------
 
 
@@ -532,6 +679,50 @@ def _tensor_summary(s: dict) -> str:
     return "\n".join(lines)
 
 
+def _transform_summary(s: dict, args) -> str:
+    """Apply a paired transform deterministically and describe what it did."""
+    import numpy as np
+
+    crop_hw = tuple(args.crop) if args.crop else None
+    tf = PairedTransform(crop_hw=crop_hw, hflip=args.hflip)
+    rng = make_rng(args.transform_seed)
+
+    nx_before = float(s["normal"][0].mean())
+    out, info = tf(s, rng)
+    nx_after = float(out["normal"][0].mean())
+
+    tl, ll, th, tw = info["low_box"]
+    ht, hl, hh, hw = info["high_box"]
+    lines = [
+        f"transform (crop={crop_hw}, hflip={args.hflip}, seed={args.transform_seed}):",
+        f"  low_box  (top,left,h,w) = ({tl},{ll},{th},{tw})",
+        f"  high_box (top,left,h,w) = ({ht},{hl},{hh},{hw})  scale={info['scale']}",
+        f"  flip decision          = {info['flip']}",
+        f"  shapes: rgb_low={tuple(out['rgb_low'].shape)} "
+        f"depth_norm={tuple(out['depth_norm'].shape)} "
+        f"normal={tuple(out['normal'].shape)} rgb_high={tuple(out['rgb_high'].shape)}",
+        f"  Nx mean: before={nx_before:+.4f} after={nx_after:+.4f} "
+        f"({'negated (flip)' if info['flip'] else 'unchanged (no flip)'})",
+    ]
+
+    # high == 2x low box, after the same flip
+    s_ = info["scale"]
+    assert info["high_box"] == (tl * s_, ll * s_, th * s_, tw * s_)
+    assert out["rgb_high"].shape[1:] == (th * s_, tw * s_)
+    assert out["rgb_low"].shape[1:] == (th, tw)
+
+    if args.input_mode:
+        # assembled-tensor path must equal transform-then-assemble (consistency)
+        x_pre = transform_input(assemble_input(s, args.input_mode), args.input_mode, info)
+        x_post = assemble_input(out, args.input_mode)
+        match = bool(np.array_equal(x_pre, x_post))
+        lines.append(f"  assembled({args.input_mode}) shape={tuple(x_post.shape)} "
+                     f"transform_input==transform-then-assemble: {match}")
+        if not match:
+            raise ValueError("transform_input diverged from transform-then-assemble")
+    return "\n".join(lines)
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", default="output_buffers", type=Path,
@@ -546,6 +737,12 @@ def main(argv: list[str]) -> int:
                     help="sample index to --load (default 0)")
     ap.add_argument("--input-mode", default=None, choices=INPUT_MODES,
                     help="also assemble + summarise the input tensor for this mode")
+    ap.add_argument("--crop", nargs=2, type=int, metavar=("H", "W"), default=None,
+                    help="paired random crop to low-res HxW (high-res cropped at 2x)")
+    ap.add_argument("--hflip", action="store_true",
+                    help="enable random paired horizontal flip (Nx negated)")
+    ap.add_argument("--transform-seed", type=int, default=0,
+                    help="seed for the deterministic transform RNG (default 0)")
     args = ap.parse_args(argv)
 
     try:
@@ -570,6 +767,13 @@ def main(argv: list[str]) -> int:
             return 1
         print(f"\nloaded sample[{args.index}] = {man[args.index].stem}:")
         print(_tensor_summary(s))
+
+        if args.crop or args.hflip:
+            try:
+                print("\n" + _transform_summary(s, args))
+            except ValueError as e:
+                print(f"error in transform: {e}", file=sys.stderr)
+                return 1
 
         if args.input_mode:
             x = assemble_input(s, args.input_mode)
