@@ -1,0 +1,26 @@
+# RGB-only tiny-overfit config (Phase 3.3a).
+#
+# A sanity check, not real training: overfit one fixed batch for a few hundred
+# iterations and confirm L1 loss drops. Run from the repo root:
+#   python -m ai.tools.train_rgb_overfit --config ai/configs/train_rgb_overfit.yaml
+# Point `data_root` at the directory holding manifest.json on this machine.
+
+paths:
+  data_root: output_buffers       # renderer output root (contains manifest.json)
+  output_dir: results             # (unused here; kept for path-config parity)
+  checkpoint_dir: checkpoints      # where the overfit checkpoint is written
+
+dataset:
+  split: train                    # path-ID split to draw the batch from
+  depth_range: null               # rgb_only ignores depth; kept for parity
+  crop: [128, 256]                # low-res paired crop (div. by 4)
+  hflip: false                    # off so the overfit batch is fixed
+  transform_seed: 0
+
+train:
+  seed: 0
+  batch_size: 2
+  iterations: 200
+  lr: 0.001
+  weight_decay: 0.0001
+  base: 16                        # small backbone for a fast sanity run
