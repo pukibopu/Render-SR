@@ -177,7 +177,8 @@ void Renderer::drawFrame() {
     pool->release();
 }
 
-void Renderer::dumpFrame(const std::filesystem::path& outDir, int frameIndex) {
+io::CameraSnapshot Renderer::dumpFrame(const std::filesystem::path& outDir,
+                                       int pathId, int frameInPath) {
     NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
 
     Uniforms u; buildUniforms(u);
@@ -219,7 +220,7 @@ void Renderer::dumpFrame(const std::filesystem::path& outDir, int frameIndex) {
         .view       = u.view,
     };
 
-    io::writeFrame(outDir, frameIndex,
+    io::writeFrame(outDir, pathId, frameInPath,
                    lowW, lowH, highW, highH,
                    m_gbuffer->lowRGBHost(),
                    m_gbuffer->lowDepthHost(),
@@ -228,6 +229,12 @@ void Renderer::dumpFrame(const std::filesystem::path& outDir, int frameIndex) {
                    snap);
 
     pool->release();
+    return snap;
 }
+
+std::uint32_t Renderer::lowResWidth () const { return m_gbuffer->lowResWidth();  }
+std::uint32_t Renderer::lowResHeight() const { return m_gbuffer->lowResHeight(); }
+std::uint32_t Renderer::highResWidth () const { return m_gbuffer->highResWidth();  }
+std::uint32_t Renderer::highResHeight() const { return m_gbuffer->highResHeight(); }
 
 }

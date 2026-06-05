@@ -62,6 +62,7 @@ add_executable(renderer
     src/app/Renderer.cpp
     src/app/GBufferPass.cpp
     src/app/Camera.cpp
+    src/app/CameraPath.cpp
     src/app/Mesh.cpp
     src/app/CocoaBridge.mm
     src/io/NpyWriter.cpp

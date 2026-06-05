@@ -1,13 +1,17 @@
 #include "app/Renderer.hpp"
+#include "app/CameraPath.hpp"
+#include "io/FrameWriter.hpp"
 
 #include <GLFW/glfw3.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <exception>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -16,7 +20,9 @@ constexpr int kInitialHeight = 720;
 
 struct Args {
     bool headless = false;
-    int  frames   = 1;
+    std::string   paths         = "default";
+    int           framesPerPath = 8;
+    std::uint32_t seed          = 42;
     std::filesystem::path out = "output_buffers";
     rs::GBufferPass::DebugBlit debugBlit = rs::GBufferPass::DebugBlit::RGB;
 };
@@ -54,14 +60,46 @@ std::optional<rs::GBufferPass::DebugBlit> parseDebugBlit(const char* v) {
 void printUsage(const char* argv0) {
     std::fprintf(stderr,
         "usage: %s [--debug-blit {rgb|depth|normal}]\n"
-        "       %s --headless --frames N [--out PATH]\n"
+        "       %s --headless [--paths default] [--frames-per-path K]\n"
+        "                       [--seed S] [--out PATH]\n"
         "\n"
-        "  --debug-blit  which low-res G-buffer attachment to display on screen\n"
-        "                (defaults to rgb; ignored in headless mode)\n"
-        "  --headless    render without a window; write each frame to PATH\n"
-        "  --frames N    number of frames to render in headless mode\n"
-        "  --out PATH    output directory root (defaults to ./output_buffers)\n",
+        "  --debug-blit       which low-res G-buffer attachment to display on\n"
+        "                     screen (defaults to rgb; ignored in headless mode)\n"
+        "  --headless         render without a window; write frames to PATH\n"
+        "  --paths NAME       camera path set to render (v1: only 'default')\n"
+        "  --frames-per-path K  frames rendered per camera path (default 8)\n"
+        "  --frames K         deprecated alias for --frames-per-path\n"
+        "  --seed S           base seed; same seed reproduces the camera paths\n"
+        "                     (default 42)\n"
+        "  --out PATH         output directory root (defaults to ./output_buffers)\n",
         argv0, argv0);
+}
+
+bool parseUInt(const char* v, const char* flag, std::uint32_t& out) {
+    // strtoul silently wraps a leading '-'; reject it explicitly.
+    if (v[0] == '-' || v[0] == '+' || v[0] == '\0') {
+        std::fprintf(stderr, "error: %s expects a non-negative integer, got '%s'\n", flag, v);
+        return false;
+    }
+    char* end = nullptr;
+    unsigned long n = std::strtoul(v, &end, 10);
+    if (!end || *end != '\0') {
+        std::fprintf(stderr, "error: %s expects a non-negative integer, got '%s'\n", flag, v);
+        return false;
+    }
+    out = static_cast<std::uint32_t>(n);
+    return true;
+}
+
+bool parsePositiveInt(const char* v, const char* flag, int& out) {
+    char* end = nullptr;
+    long n = std::strtol(v, &end, 10);
+    if (!end || *end != '\0' || n <= 0) {
+        std::fprintf(stderr, "error: %s expects a positive integer, got '%s'\n", flag, v);
+        return false;
+    }
+    out = static_cast<int>(n);
+    return true;
 }
 
 bool parseArgs(int argc, char** argv, Args& out_args) {
@@ -86,16 +124,23 @@ bool parseArgs(int argc, char** argv, Args& out_args) {
             out_args.debugBlit = *parsed;
         } else if (a == "--headless") {
             out_args.headless = true;
-        } else if (a == "--frames") {
-            const char* v = next("--frames");
+        } else if (a == "--paths") {
+            const char* v = next("--paths");
             if (!v) return false;
-            char* end = nullptr;
-            long n = std::strtol(v, &end, 10);
-            if (!end || *end != '\0' || n <= 0) {
-                std::fprintf(stderr, "error: --frames expects a positive integer, got '%s'\n", v);
+            if (std::strcmp(v, "default") != 0) {
+                std::fprintf(stderr,
+                    "error: --paths only supports 'default' in v1, got '%s'\n", v);
                 return false;
             }
-            out_args.frames = static_cast<int>(n);
+            out_args.paths = v;
+        } else if (a == "--frames-per-path" || a == "--frames") {
+            const char* v = next(a.c_str());
+            if (!v) return false;
+            if (!parsePositiveInt(v, "--frames-per-path", out_args.framesPerPath)) return false;
+        } else if (a == "--seed") {
+            const char* v = next("--seed");
+            if (!v) return false;
+            if (!parseUInt(v, "--seed", out_args.seed)) return false;
         } else if (a == "--out") {
             const char* v = next("--out");
             if (!v) return false;
@@ -108,37 +153,51 @@ bool parseArgs(int argc, char** argv, Args& out_args) {
             return false;
         }
     }
-    if (!out_args.headless && out_args.frames != 1) {
-        std::fprintf(stderr, "error: --frames only applies in --headless mode\n");
-        return false;
-    }
     return true;
 }
 
 int runHeadless(const Args& args) {
     rs::Renderer renderer(nullptr);
     std::printf("Metal device: %s\n", renderer.deviceName());
-    std::printf("Writing %d frame%s under: %s\n",
-                args.frames, args.frames == 1 ? "" : "s",
+
+    std::vector<rs::PathEntry> paths =
+        rs::makeDefaultPathSet(args.framesPerPath, args.seed);
+
+    const int totalFrames =
+        static_cast<int>(paths.size()) * args.framesPerPath;
+    std::printf("Path set '%s': %zu paths x %d frames = %d frame%s "
+                "(seed %u) under: %s\n",
+                args.paths.c_str(), paths.size(), args.framesPerPath,
+                totalFrames, totalFrames == 1 ? "" : "s", args.seed,
                 args.out.string().c_str());
 
     rs::Camera& cam = renderer.camera();
-    // Deterministic orbit: full circle across N frames so consecutive frames
-    // are spatially distinct (so the output isn't just N copies of one pose).
-    const float az0  = cam.azimuth();
-    const float step = (args.frames > 1)
-        ? (6.2831853f / static_cast<float>(args.frames))
-        : 0.0f;
 
-    for (int i = 0; i < args.frames; ++i) {
-        // Reset to deterministic pose for this frame index.
-        cam.setOrbit(/*target*/ {0.f, 0.f, 0.f},
-                     /*azimuth*/   az0 + step * static_cast<float>(i),
-                     /*elevation*/ 0.35f,
-                     /*distance*/  4.0f);
-        renderer.dumpFrame(args.out, i);
+    std::vector<rs::io::PathSummary>  pathSummaries;
+    std::vector<rs::io::ManifestEntry> manifest;
+    pathSummaries.reserve(paths.size());
+    manifest.reserve(totalFrames);
+
+    for (const rs::PathEntry& entry : paths) {
+        const rs::CameraPath& path = *entry.path;
+        pathSummaries.push_back(rs::io::PathSummary{
+            entry.id, path.type(), entry.split, path.seed(), path.frameCount()});
+
+        for (int f = 0; f < path.frameCount(); ++f) {
+            const rs::CameraPose pose = path.poseAt(f);
+            cam.setOrbit(pose.target, pose.azimuth, pose.elevation, pose.distance);
+            rs::io::CameraSnapshot snap = renderer.dumpFrame(args.out, entry.id, f);
+            manifest.push_back(rs::io::ManifestEntry{
+                entry.id, path.type(), entry.split, path.seed(), f, snap});
+        }
     }
-    std::printf("Done.\n");
+
+    rs::io::writeManifest(args.out, args.seed, args.framesPerPath,
+                          renderer.lowResWidth(),  renderer.lowResHeight(),
+                          renderer.highResWidth(), renderer.highResHeight(),
+                          pathSummaries, manifest);
+
+    std::printf("Wrote %d frames + manifest.json. Done.\n", totalFrames);
     return 0;
 }
 

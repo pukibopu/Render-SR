@@ -2,7 +2,9 @@
 
 #include "Camera.hpp"
 #include "GBufferPass.hpp"
+#include "io/FrameWriter.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 
@@ -33,13 +35,19 @@ public:
     // debug attachment to the swapchain. No-op in headless mode.
     void drawFrame();
 
-    // Render one frame and write rgb_low.png, rgb_high.png, depth.npy,
-    // normal.npy, meta.json under `outDir` using `frameIndex` as the suffix.
-    // Synchronous: blocks until the GPU has finished.
-    void dumpFrame(const std::filesystem::path& outDir, int frameIndex);
+    // Render one frame at the camera's current pose and write its outputs under
+    // `outDir`, named frame_{pathId:02d}_{frameInPath:04d}. Synchronous: blocks
+    // until the GPU has finished. Returns the camera snapshot for the manifest.
+    io::CameraSnapshot dumpFrame(const std::filesystem::path& outDir,
+                                 int pathId, int frameInPath);
 
     Camera&       camera()       { return m_camera; }
     const Camera& camera() const { return m_camera; }
+
+    std::uint32_t lowResWidth () const;
+    std::uint32_t lowResHeight() const;
+    std::uint32_t highResWidth () const;
+    std::uint32_t highResHeight() const;
 
     void setDebugBlit(GBufferPass::DebugBlit b) { m_debugBlit = b; }
 

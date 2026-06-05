@@ -11,12 +11,6 @@ namespace rs::io {
 
 namespace {
 
-std::string frameStem(int frameIndex) {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "frame_%04d", frameIndex);
-    return std::string(buf);
-}
-
 std::string fmtF(float v) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%.6g", v);
@@ -41,7 +35,7 @@ std::string fmtMat4RowMajor(simd_float4x4 m) {
 }
 
 void writeMeta(const std::filesystem::path& path,
-               int frameIndex,
+               int pathId, int frameInPath,
                std::uint32_t lowW,  std::uint32_t lowH,
                std::uint32_t highW, std::uint32_t highH,
                const CameraSnapshot& cam)
@@ -50,7 +44,8 @@ void writeMeta(const std::filesystem::path& path,
     if (!out) throw std::runtime_error("FrameWriter: failed to open " + path.string());
 
     out << "{\n";
-    out << "  \"frame\": " << frameIndex << ",\n";
+    out << "  \"path_id\":   " << pathId      << ",\n";
+    out << "  \"frame_idx\": " << frameInPath << ",\n";
     out << "  \"low_res\":  [" << lowW  << ", " << lowH  << "],\n";
     out << "  \"high_res\": [" << highW << ", " << highH << "],\n";
     out << "  \"camera\": {\n";
@@ -87,8 +82,14 @@ void writeMeta(const std::filesystem::path& path,
 
 }
 
+std::string frameStem(int pathId, int frameInPath) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "frame_%02d_%04d", pathId, frameInPath);
+    return std::string(buf);
+}
+
 void writeFrame(const std::filesystem::path& outRoot,
-                int frameIndex,
+                int pathId, int frameInPath,
                 std::uint32_t lowW,  std::uint32_t lowH,
                 std::uint32_t highW, std::uint32_t highH,
                 const std::uint8_t* lowRGBA,
@@ -109,7 +110,7 @@ void writeFrame(const std::filesystem::path& outRoot,
     std::filesystem::create_directories(normalDir);
     std::filesystem::create_directories(metaDir);
 
-    const std::string stem = frameStem(frameIndex);
+    const std::string stem = frameStem(pathId, frameInPath);
 
     if (!writePngRGBfromRGBA8(rgbLowDir / (stem + ".png"),
                               lowRGBA, (int)lowW, (int)lowH)) {
@@ -124,7 +125,63 @@ void writeFrame(const std::filesystem::path& outRoot,
     writeNpyF32(normalDir / (stem + ".npy"), lowNormal3,  {lowH, lowW, 3});
 
     writeMeta(metaDir / (stem + ".json"),
-              frameIndex, lowW, lowH, highW, highH, cam);
+              pathId, frameInPath, lowW, lowH, highW, highH, cam);
+}
+
+void writeManifest(const std::filesystem::path& outRoot,
+                   std::uint32_t baseSeed, int framesPerPath,
+                   std::uint32_t lowW,  std::uint32_t lowH,
+                   std::uint32_t highW, std::uint32_t highH,
+                   const std::vector<PathSummary>&  paths,
+                   const std::vector<ManifestEntry>& frames)
+{
+    std::filesystem::create_directories(outRoot);
+    const std::filesystem::path path = outRoot / "manifest.json";
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) throw std::runtime_error("FrameWriter: failed to open " + path.string());
+
+    out << "{\n";
+    out << "  \"seed\": "            << baseSeed       << ",\n";
+    out << "  \"frames_per_path\": " << framesPerPath  << ",\n";
+    out << "  \"low_res\":  [" << lowW  << ", " << lowH  << "],\n";
+    out << "  \"high_res\": [" << highW << ", " << highH << "],\n";
+
+    out << "  \"paths\": [\n";
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        const PathSummary& p = paths[i];
+        out << "    {\"path_id\": " << p.id
+            << ", \"type\": \""     << p.type  << "\""
+            << ", \"split\": \""    << p.split << "\""
+            << ", \"seed\": "       << p.seed
+            << ", \"frames\": "     << p.frames << "}"
+            << (i + 1 < paths.size() ? "," : "") << "\n";
+    }
+    out << "  ],\n";
+
+    out << "  \"frames\": [\n";
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        const ManifestEntry& e = frames[i];
+        const std::string stem = frameStem(e.path_id, e.frame_in_path);
+        out << "    {\"frame\": \""  << stem << "\""
+            << ", \"path_id\": "      << e.path_id
+            << ", \"path_type\": \""  << e.path_type << "\""
+            << ", \"split\": \""      << e.split     << "\""
+            << ", \"seed\": "         << e.seed
+            << ", \"frame_in_path\": " << e.frame_in_path
+            << ", \"camera\": {"
+            <<   "\"target\": "      << fmtVec3(e.cam.target)
+            << ", \"azimuth_rad\": " << fmtF(e.cam.azimuth)
+            << ", \"elevation_rad\": " << fmtF(e.cam.elevation)
+            << ", \"distance\": "    << fmtF(e.cam.distance)
+            << ", \"eye\": "         << fmtVec3(e.cam.eye)
+            << "}}"
+            << (i + 1 < frames.size() ? "," : "") << "\n";
+    }
+    out << "  ]\n";
+    out << "}\n";
+
+    if (!out) throw std::runtime_error("FrameWriter: write failed for " + path.string());
 }
 
 }
