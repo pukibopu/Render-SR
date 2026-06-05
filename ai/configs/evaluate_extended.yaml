@@ -1,0 +1,23 @@
+# Extended evaluation config (Phase 5.2): adds bicubic, LPIPS, edge metrics,
+# and inference latency on top of L1/PSNR/SSIM. No training.
+#
+# Run from the repo root:
+#   python -m ai.tools.evaluate_extended --config ai/configs/evaluate_extended.yaml
+# Same held-out manifest path-ID test split as Phase 5.1; best checkpoints only.
+
+paths:
+  data_root: output_buffers       # renderer output root (contains manifest.json)
+  output_dir: results             # extended CSVs + visuals/ written here
+
+checkpoints:
+  rgb_checkpoint: remote_runs/phase3_3b_rgb_baseline/checkpoints/sr_rgb_best.pt
+  rendering_aware_checkpoint: remote_runs/phase4_2_rendering_aware/checkpoints/sr_rendering_aware_best.pt
+
+eval:
+  split: test                     # held-out path-ID split (same for all methods)
+  depth_range: null               # must match training; null = meta near/far
+  num_visuals: 4                  # samples to render comparison/edge images for
+  error_scale: 5.0                # amplify abs-error maps (display only)
+  edge_percentile: 90.0           # target-luminance gradient pct -> edge mask
+  lpips_net: alex                 # LPIPS backbone if lpips is installed
+  latency_warmup: 3               # warmup forward passes before timing
