@@ -1,8 +1,11 @@
-"""Model shape smoke test (Phase 3.1).
+"""Model shape smoke test (Phase 3.1 / 4.1).
 
-Builds the RGB-only baseline and checks the shape contract on random input:
+Builds both SR models and checks the shape contract on random input:
 
-    input  (B, 3, H, W)  ->  output (B, 3, 2H, 2W)
+    RGB-only         input (B, 3, H, W)  ->  output (B, 3, 2H, 2W)
+    rendering-aware  input (B, 7, H, W)  ->  output (B, 3, 2H, 2W)
+
+Both share the same SRUNet backbone; only ``in_channels`` differs (3 vs 7).
 
 torch is required to actually run a forward pass; if it isn't installed this
 exits non-zero with a clear message (the data layer runs without torch, but the
@@ -34,6 +37,7 @@ def main(argv: list[str]) -> int:
               file=sys.stderr)
         return 1
 
+    from ai.models.sr_rendering_aware import build_sr_rendering_aware
     from ai.models.sr_rgb import build_sr_rgb
     from ai.utils.device import select_device
 
@@ -43,28 +47,38 @@ def main(argv: list[str]) -> int:
         return 1
 
     name, device = select_device()
-    model = build_sr_rgb(base=args.base)
-    if device is not None:
-        model = model.to(device)
-    model.eval()
+    print(f"model smoke test  (device: {name})")
 
-    n_params = sum(p.numel() for p in model.parameters())
-    x = torch.randn(args.batch, 3, args.height, args.width,
-                    device=device if device is not None else None)
-    with torch.no_grad():
-        y = model(x)
-
+    cases = [
+        ("sr_rgb (SRUNet in=3)", 3, build_sr_rgb),
+        ("sr_rendering_aware (SRUNet in=7)", 7, build_sr_rendering_aware),
+    ]
     expected = (args.batch, 3, args.height * 2, args.width * 2)
-    print("model smoke test (sr_rgb / SRUNet in=3)")
-    print(f"  device:   {name}")
-    print(f"  params:   {n_params:,}")
-    print(f"  input:    {tuple(x.shape)}")
-    print(f"  output:   {tuple(y.shape)}")
-    print(f"  expected: {expected}")
-    if tuple(y.shape) != expected:
+    ok = True
+    for label, in_ch, build in cases:
+        model = build(base=args.base)
+        if device is not None:
+            model = model.to(device)
+        model.eval()
+
+        n_params = sum(p.numel() for p in model.parameters())
+        x = torch.randn(args.batch, in_ch, args.height, args.width,
+                        device=device if device is not None else None)
+        with torch.no_grad():
+            y = model(x)
+
+        match = tuple(y.shape) == expected
+        ok = ok and match
+        print(f"  {label}")
+        print(f"    params:   {n_params:,}")
+        print(f"    input:    {tuple(x.shape)}")
+        print(f"    output:   {tuple(y.shape)}  expected: {expected}"
+              f"  {'OK' if match else 'MISMATCH'}")
+
+    if not ok:
         print("FAILED: output shape mismatch", file=sys.stderr)
         return 1
-    print("OK: 2x output shape correct.")
+    print("OK: both models produce 2x (B,3,2H,2W) output.")
     return 0
 
 
