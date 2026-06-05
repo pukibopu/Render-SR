@@ -1,0 +1,31 @@
+# RGB-only full baseline training config (Phase 3.3b).
+#
+# Real baseline training over the manifest's path-ID train/test split. Run from
+# the repo root:
+#   python -m ai.tools.train_rgb_baseline --config ai/configs/train_rgb_baseline.yaml
+# Point `data_root` at the directory holding manifest.json on this machine.
+#
+# Keep optimizer / schedule / seed here so the Phase 4 7ch run can reuse them
+# unchanged (fair 3ch<->7ch comparison).
+
+paths:
+  data_root: output_buffers       # renderer output root (contains manifest.json)
+  output_dir: results             # per-epoch loss CSV is written here
+  checkpoint_dir: checkpoints      # last + best checkpoints written here
+
+dataset:
+  crop: [128, 256]                # low-res paired crop (div. by 4)
+  hflip: true                     # train-time augmentation (val forces it off)
+  transform_seed: 0
+  depth_range: null               # rgb_only ignores depth; kept for parity
+
+train:
+  seed: 0
+  epochs: 50
+  batch_size: 8
+  val_batch_size: 8
+  num_workers: 2
+  lr: 0.0005
+  weight_decay: 0.0001
+  eta_min: 0.00001                # cosine schedule floor
+  base: 32                        # backbone width
