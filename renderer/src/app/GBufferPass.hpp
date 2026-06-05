@@ -1,6 +1,9 @@
 #pragma once
 
+#include "Uniforms.h"
+
 #include <cstdint>
+#include <vector>
 
 namespace MTL {
     class Device;
@@ -13,11 +16,17 @@ namespace MTL {
     class Buffer;
 }
 
-struct Uniforms;
-
 namespace rs {
 
 class Mesh;
+
+// One drawable: a mesh plus the per-object uniforms (model + material + the
+// shared view/proj/light) to render it with. All items in a pass are drawn
+// into the same attachments in one render encoder (no clear between objects).
+struct DrawItem {
+    const Mesh* mesh;
+    Uniforms    uniforms;
+};
 
 // Off-screen multi-render-target scene pass plus a fullscreen blit that
 // copies one of the low-res attachments onto the swapchain for visual
@@ -47,8 +56,8 @@ public:
     GBufferPass(const GBufferPass&) = delete;
     GBufferPass& operator=(const GBufferPass&) = delete;
 
-    void encodeLowRes (MTL::CommandBuffer* cmd, const Mesh& mesh, const Uniforms& u) const;
-    void encodeHighRes(MTL::CommandBuffer* cmd, const Mesh& mesh, const Uniforms& u) const;
+    void encodeLowRes (MTL::CommandBuffer* cmd, const std::vector<DrawItem>& items) const;
+    void encodeHighRes(MTL::CommandBuffer* cmd, const std::vector<DrawItem>& items) const;
 
     // Blit one low-res attachment onto `dst` (typically the swapchain texture).
     // depthMin/depthMax map the R32Float depth range to [0,1] for visualization;

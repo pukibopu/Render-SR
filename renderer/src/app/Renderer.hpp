@@ -2,11 +2,13 @@
 
 #include "Camera.hpp"
 #include "GBufferPass.hpp"
+#include "Scene.hpp"
 #include "io/FrameWriter.hpp"
 
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <vector>
 
 struct GLFWwindow;
 
@@ -55,7 +57,8 @@ public:
 
 private:
     void loadLibrary();
-    void buildUniforms(struct Uniforms& u) const;
+    // Build one DrawItem per scene object at the camera's current pose.
+    void buildDrawItems(std::vector<DrawItem>& out) const;
 
     GLFWwindow*        m_window  = nullptr;
     MTL::Device*       m_device  = nullptr;
@@ -64,7 +67,7 @@ private:
     MTL::Library*      m_library = nullptr;
 
     std::unique_ptr<GBufferPass> m_gbuffer;
-    std::unique_ptr<Mesh>        m_mesh;
+    std::unique_ptr<Scene>       m_scene;
     Camera                       m_camera;
 
     GBufferPass::DebugBlit m_debugBlit = GBufferPass::DebugBlit::RGB;

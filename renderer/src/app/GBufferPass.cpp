@@ -247,7 +247,7 @@ void GBufferPass::buildReadbackBuffers() {
 }
 
 void GBufferPass::encodeLowRes(MTL::CommandBuffer* cmd,
-                               const Mesh& mesh, const Uniforms& u) const
+                               const std::vector<DrawItem>& items) const
 {
     MTL::RenderPassDescriptor* desc = MTL::RenderPassDescriptor::alloc()->init();
 
@@ -282,22 +282,24 @@ void GBufferPass::encodeLowRes(MTL::CommandBuffer* cmd,
     enc->setCullMode(MTL::CullModeBack);
     enc->setFrontFacingWinding(MTL::WindingCounterClockwise);
 
-    enc->setVertexBuffer(mesh.vertexBuffer(), 0, 0);
-    enc->setVertexBytes(&u, sizeof(u), 1);
-    enc->setFragmentBytes(&u, sizeof(u), 1);
-
-    enc->drawIndexedPrimitives(
-        MTL::PrimitiveTypeTriangle,
-        mesh.indexCount(),
-        MTL::IndexTypeUInt32,
-        mesh.indexBuffer(),
-        NS::UInteger(0));
+    // All objects draw into the same attachments in one pass (single clear).
+    for (const DrawItem& it : items) {
+        enc->setVertexBuffer(it.mesh->vertexBuffer(), 0, 0);
+        enc->setVertexBytes(&it.uniforms, sizeof(Uniforms), 1);
+        enc->setFragmentBytes(&it.uniforms, sizeof(Uniforms), 1);
+        enc->drawIndexedPrimitives(
+            MTL::PrimitiveTypeTriangle,
+            it.mesh->indexCount(),
+            MTL::IndexTypeUInt32,
+            it.mesh->indexBuffer(),
+            NS::UInteger(0));
+    }
     enc->endEncoding();
     desc->release();
 }
 
 void GBufferPass::encodeHighRes(MTL::CommandBuffer* cmd,
-                                const Mesh& mesh, const Uniforms& u) const
+                                const std::vector<DrawItem>& items) const
 {
     MTL::RenderPassDescriptor* desc = MTL::RenderPassDescriptor::alloc()->init();
 
@@ -319,16 +321,18 @@ void GBufferPass::encodeHighRes(MTL::CommandBuffer* cmd,
     enc->setCullMode(MTL::CullModeBack);
     enc->setFrontFacingWinding(MTL::WindingCounterClockwise);
 
-    enc->setVertexBuffer(mesh.vertexBuffer(), 0, 0);
-    enc->setVertexBytes(&u, sizeof(u), 1);
-    enc->setFragmentBytes(&u, sizeof(u), 1);
-
-    enc->drawIndexedPrimitives(
-        MTL::PrimitiveTypeTriangle,
-        mesh.indexCount(),
-        MTL::IndexTypeUInt32,
-        mesh.indexBuffer(),
-        NS::UInteger(0));
+    // Same geometry as low-res, RGB-only attachment (ground-truth high res).
+    for (const DrawItem& it : items) {
+        enc->setVertexBuffer(it.mesh->vertexBuffer(), 0, 0);
+        enc->setVertexBytes(&it.uniforms, sizeof(Uniforms), 1);
+        enc->setFragmentBytes(&it.uniforms, sizeof(Uniforms), 1);
+        enc->drawIndexedPrimitives(
+            MTL::PrimitiveTypeTriangle,
+            it.mesh->indexCount(),
+            MTL::IndexTypeUInt32,
+            it.mesh->indexBuffer(),
+            NS::UInteger(0));
+    }
     enc->endEncoding();
     desc->release();
 }

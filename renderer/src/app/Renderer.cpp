@@ -105,11 +105,11 @@ Renderer::Renderer(GLFWwindow* window) : m_window(window) {
         m_device, m_library, static_cast<int>(kSwapchainFormat),
         kLowResW, kLowResH, kHighResW, kHighResH);
 
-    m_mesh = std::make_unique<Mesh>(m_device, primitives::torus(48, 32, 1.0f, 0.35f));
+    m_scene = std::make_unique<Scene>(m_device);
 }
 
 Renderer::~Renderer() {
-    m_mesh.reset();
+    m_scene.reset();
     m_gbuffer.reset();
     if (m_library) { m_library->release(); m_library = nullptr; }
     if (m_queue)   { m_queue->release();   m_queue   = nullptr; }
@@ -132,15 +132,33 @@ void Renderer::loadLibrary() {
     }
 }
 
-void Renderer::buildUniforms(Uniforms& u) const {
-    u.model = matrix_identity_float4x4;
-    u.view  = m_camera.view();
-    u.proj  = m_camera.proj();
-    u.normalMatrix = makeNormalMatrix(simd_mul(u.view, u.model));
-    u.lightDirView = simd_normalize(simd_make_float3(-0.4f, -0.7f, -0.6f));
-    u.ambient = 0.15f;
-    u.albedo = simd_make_float3(0.72f, 0.62f, 0.55f);
-    u.specularStrength = 0.35f;
+void Renderer::buildDrawItems(std::vector<DrawItem>& out) const {
+    const simd_float4x4 view = m_camera.view();
+    const simd_float4x4 proj = m_camera.proj();
+
+    // Light direction is world-space in the scene; transform into view space
+    // once (rotation only, view has no scale) so shading is stable as the
+    // camera orbits.
+    const simd_float3x3 viewRot = makeNormalMatrix(view);
+    const simd_float3 lightDirView =
+        simd_normalize(simd_mul(viewRot, m_scene->lightDirWorld()));
+    const float ambient = m_scene->ambient();
+
+    const auto& objects = m_scene->objects();
+    out.clear();
+    out.reserve(objects.size());
+    for (const SceneObject& o : objects) {
+        Uniforms u;
+        u.model = o.model;
+        u.view  = view;
+        u.proj  = proj;
+        u.normalMatrix = makeNormalMatrix(simd_mul(view, o.model));
+        u.lightDirView = lightDirView;
+        u.ambient = ambient;
+        u.albedo = o.material.albedo;
+        u.specularStrength = o.material.specularStrength;
+        out.push_back(DrawItem{o.mesh, u});
+    }
 }
 
 void Renderer::drawFrame() {
@@ -160,14 +178,16 @@ void Renderer::drawFrame() {
     CA::MetalDrawable* drawable = m_layer->nextDrawable();
     if (!drawable) { pool->release(); return; }
 
-    Uniforms u; buildUniforms(u);
+    std::vector<DrawItem> items; buildDrawItems(items);
 
     MTL::CommandBuffer* cmd = m_queue->commandBuffer();
-    m_gbuffer->encodeLowRes (cmd, *m_mesh, u);
-    m_gbuffer->encodeHighRes(cmd, *m_mesh, u);
+    m_gbuffer->encodeLowRes (cmd, items);
+    m_gbuffer->encodeHighRes(cmd, items);
 
-    constexpr float kDepthVizMin = 2.0f;
-    constexpr float kDepthVizMax = 8.0f;
+    // Scene spans a wider depth range than the old single torus; widen the
+    // grayscale debug remap so the floor and far cube stay visible.
+    constexpr float kDepthVizMin = 1.5f;
+    constexpr float kDepthVizMax = 14.0f;
     m_gbuffer->encodeBlitToSwapchain(
         cmd, drawable->texture(), m_debugBlit, kDepthVizMin, kDepthVizMax);
 
@@ -181,11 +201,11 @@ io::CameraSnapshot Renderer::dumpFrame(const std::filesystem::path& outDir,
                                        int pathId, int frameInPath) {
     NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
 
-    Uniforms u; buildUniforms(u);
+    std::vector<DrawItem> items; buildDrawItems(items);
 
     MTL::CommandBuffer* cmd = m_queue->commandBuffer();
-    m_gbuffer->encodeLowRes (cmd, *m_mesh, u);
-    m_gbuffer->encodeHighRes(cmd, *m_mesh, u);
+    m_gbuffer->encodeLowRes (cmd, items);
+    m_gbuffer->encodeHighRes(cmd, items);
     m_gbuffer->encodeReadback(cmd);
     cmd->commit();
     cmd->waitUntilCompleted();
@@ -217,7 +237,7 @@ io::CameraSnapshot Renderer::dumpFrame(const std::filesystem::path& outDir,
         .elevation  = m_camera.elevation(),
         .distance   = m_camera.distance(),
         .eye        = m_camera.eye(),
-        .view       = u.view,
+        .view       = m_camera.view(),
     };
 
     io::writeFrame(outDir, pathId, frameInPath,
