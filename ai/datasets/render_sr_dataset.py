@@ -10,8 +10,9 @@ dependencies — the manifest/sample layer is pure stdlib. Pixel loading
 (``load_sample`` / ``RenderSRManifest.load``) imports numpy + PIL lazily and
 returns float32 CHW numpy arrays (no torch dependency, so it stays
 device-agnostic; a torch wrapper can come with training). Depth is returned
-raw (eye-space metres, unnormalised); normalisation, paired crop/flip, and the
-3ch/7ch channel assembly are later sub-steps, deliberately not done here.
+both raw (``depth``, eye-space metres) and normalised to [0,1] (``depth_norm``,
+Phase 2.3 — see normalize_depth). Paired crop/flip and the 3ch/7ch channel
+assembly are later sub-steps, deliberately not done here.
 
 Layout it expects (written by the renderer, see renderer/src/io/FrameWriter):
 
@@ -181,6 +182,65 @@ _NORMAL_MEAN_TOL = 0.05
 _NORMAL_MAX_TOL = 0.10
 
 
+# --- depth normalisation (Phase 2.3) ----------------------------------------
+#
+# Convention (deterministic, documented once here):
+#   depth_norm = clip((depth_raw - near) / (far - near), 0, 1)
+# where (near, far) are the camera planes from meta["camera"] by default
+# (constant across the v1 dataset — Camera near/far are fixed), or an explicit
+# dataset-wide override passed to load_sample().
+#
+#   * Linear map: near -> 0, far -> 1.
+#   * Background pixels carry raw depth 0 (cleared attachment) and therefore map
+#     to 0 after clipping. Background and a surface exactly at the near plane are
+#     thus indistinguishable in depth_norm; that is acceptable for v1 and noted
+#     so downstream code doesn't read 0 as "near surface".
+#   * Foreground geometry outside [near, far] is clipped; load_sample records the
+#     clipped fraction so out-of-range renders are visible, not silent.
+#
+# `depth` (raw eye-space, unnormalised) stays the key returned by Phase 2.2.
+# `depth_norm` (this normalised [0,1] map) is the network-facing depth used by
+# the later 7ch channel assembly. Keep both so nothing downstream re-derives it.
+
+
+def normalize_depth(depth_raw, near: float, far: float):
+    """Map raw linear eye-space depth to [0, 1] via clip((d-near)/(far-near)).
+
+    Returns a float32 array the same shape as ``depth_raw``. See the module
+    comment above for the convention. Raises if the range is non-positive.
+    """
+    import numpy as np
+
+    if not (far > near):
+        raise ValueError(f"depth normalisation needs far > near, got near={near}, far={far}")
+    norm = (np.asarray(depth_raw, dtype=np.float32) - np.float32(near)) / np.float32(far - near)
+    return np.clip(norm, 0.0, 1.0).astype(np.float32)
+
+
+def _depth_norm_stats(depth_raw, depth_norm, near: float, far: float) -> dict:
+    """Foreground-focused stats for debug output (see CLI)."""
+    import numpy as np
+
+    raw = depth_raw[0] if depth_raw.ndim == 3 else depth_raw
+    norm = depth_norm[0] if depth_norm.ndim == 3 else depth_norm
+    fg = raw > 0.0
+    clipped_low = int(np.count_nonzero(fg & (raw < near)))
+    clipped_high = int(np.count_nonzero(fg & (raw > far)))
+    fg_count = int(np.count_nonzero(fg))
+    return {
+        "near": float(near),
+        "far": float(far),
+        "raw_min": float(raw[fg].min()) if fg_count else 0.0,
+        "raw_max": float(raw[fg].max()) if fg_count else 0.0,
+        "norm_min": float(norm[fg].min()) if fg_count else 0.0,
+        "norm_max": float(norm[fg].max()) if fg_count else 0.0,
+        "fg_count": fg_count,
+        "clipped_low": clipped_low,    # foreground nearer than `near`
+        "clipped_high": clipped_high,  # foreground farther than `far`
+        "clipped": bool(clipped_low or clipped_high),
+    }
+
+
 def _load_png_chw(path: Path, expect_hw: tuple[int, int] | None):
     """Load an RGB PNG as float32 CHW in [0, 1]; drop alpha if present."""
     import numpy as np
@@ -202,15 +262,22 @@ def _load_npy(path: Path):
 def load_sample(sample: Sample,
                 low_hw: tuple[int, int],
                 high_hw: tuple[int, int],
-                validate: bool = True) -> dict:
+                validate: bool = True,
+                depth_range: tuple[float, float] | None = None) -> dict:
     """Load one frame's pixels + identity into a sample dict.
 
     Returns float32 numpy arrays in CHW order:
-      rgb_low  (3, lowH,  lowW)  in [0, 1]
-      rgb_high (3, highH, highW) in [0, 1]
-      depth    (1, lowH,  lowW)  raw eye-space metres (unnormalised)
-      normal   (3, lowH,  lowW)  view-space, components in [-1, 1]
-    plus path_id, frame_in_path, split, and the parsed meta dict.
+      rgb_low    (3, lowH,  lowW)  in [0, 1]
+      rgb_high   (3, highH, highW) in [0, 1]
+      depth      (1, lowH,  lowW)  raw eye-space metres (unnormalised)
+      depth_norm (1, lowH,  lowW)  depth normalised to [0, 1] (Phase 2.3)
+      normal     (3, lowH,  lowW)  view-space, components in [-1, 1]
+    plus path_id, frame_in_path, split, depth_norm_stats, and the parsed meta.
+
+    ``depth`` stays the raw, unnormalised eye-space map (unchanged from Phase
+    2.2); ``depth_norm`` is the network-facing [0,1] depth. By default the
+    normalisation range is meta["camera"] near/far; pass ``depth_range`` to
+    override with an explicit dataset-wide (near, far). See normalize_depth.
     """
     import numpy as np
 
@@ -230,14 +297,27 @@ def load_sample(sample: Sample,
     with sample.meta.open() as f:
         meta = json.load(f)
 
+    if depth_range is not None:
+        near, far = float(depth_range[0]), float(depth_range[1])
+    else:
+        cam = meta.get("camera", {})
+        if "near" not in cam or "far" not in cam:
+            raise ValueError(f"{sample.meta.name}: meta.camera has no near/far for depth norm")
+        near, far = float(cam["near"]), float(cam["far"])
+
+    depth_norm = normalize_depth(depth, near, far)  # (1, H, W) in [0, 1]
+    stats = _depth_norm_stats(depth, depth_norm, near, far)
+
     out = {
         "rgb_low": rgb_low,
         "rgb_high": rgb_high,
         "depth": depth,
+        "depth_norm": depth_norm,
         "normal": normal,
         "path_id": sample.path_id,
         "frame_in_path": sample.frame_in_path,
         "split": sample.split,
+        "depth_norm_stats": stats,
         "meta": meta,
     }
     if validate:
@@ -259,6 +339,8 @@ def validate_sample(s: dict,
         "depth": (1, lh, lw),
         "normal": (3, lh, lw),
     }
+    if "depth_norm" in s:
+        expected["depth_norm"] = (1, lh, lw)
     for name, shape in expected.items():
         a = s[name]
         if a.dtype != np.float32:
@@ -274,7 +356,7 @@ def validate_sample(s: dict,
         if a.min() < 0.0 or a.max() > 1.0:
             raise ValueError(f"{name}: out of [0,1] (min={a.min():.4f}, max={a.max():.4f})")
 
-    # Depth: finite, has foreground, non-degenerate range.
+    # Depth (raw): finite, has foreground, non-degenerate range.
     depth = s["depth"][0]
     if not np.all(np.isfinite(depth)):
         raise ValueError("depth: contains non-finite values")
@@ -283,6 +365,16 @@ def validate_sample(s: dict,
         raise ValueError("depth: no foreground pixels (depth>0 nowhere)")
     if depth[fg].min() == depth[fg].max():
         raise ValueError("depth: foreground degenerate (min == max)")
+
+    # depth_norm: finite and within [0, 1] (clip target of Phase 2.3).
+    if "depth_norm" in s:
+        dn = s["depth_norm"]
+        if not np.all(np.isfinite(dn)):
+            raise ValueError("depth_norm: contains non-finite values")
+        if dn.min() < 0.0 or dn.max() > 1.0:
+            raise ValueError(
+                f"depth_norm: out of [0,1] (min={dn.min():.4f}, max={dn.max():.4f})"
+            )
 
     # Normal: finite, has negative components (not [0,1] colour), unit on fg.
     normal = s["normal"]
@@ -365,6 +457,15 @@ def _tensor_summary(s: dict) -> str:
     fg = depth > 0.0
     lines.append(f"  depth fg: cov={fg.mean()*100:.1f}% "
                  f"min={depth[fg].min():.3f} max={depth[fg].max():.3f}")
+    st = s.get("depth_norm_stats")
+    if st is not None:
+        lines.append(
+            f"  depth_norm: near={st['near']:.4g} far={st['far']:.4g}  "
+            f"raw[fg]=[{st['raw_min']:.3f}, {st['raw_max']:.3f}]  "
+            f"norm[fg]=[{st['norm_min']:.4f}, {st['norm_max']:.4f}]")
+        lines.append(
+            f"  depth_norm clip: clipped={st['clipped']} "
+            f"(near={st['clipped_low']}, far={st['clipped_high']} of fg={st['fg_count']})")
     normal = s["normal"]
     lengths = np.sqrt((normal * normal).sum(axis=0))
     lines.append(f"  normal fg: mean_len={float(lengths[fg].mean()):.4f} "
