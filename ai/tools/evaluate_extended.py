@@ -33,7 +33,11 @@ import time
 from pathlib import Path
 
 _METHODS = ("sr_rgb", "sr_rendering_aware", "bicubic")
-_METRIC_KEYS = ("l1", "psnr", "ssim", "lpips", "edge_l1", "nonedge_l1", "latency_ms")
+_METRIC_KEYS = ("l1", "psnr", "ssim", "lpips", "edge_l1", "nonedge_l1",
+                "edge_ratio", "latency_ms")
+
+# Warn at most once per kind of degenerate edge region (avoids per-image spam).
+_WARNED = set()
 
 
 def _to_hwc(t):
@@ -45,7 +49,15 @@ def _to_hwc(t):
 
 
 def _edge_mask(target_hwc, percentile):
-    """Bool (H,W) edge mask from target luminance gradient magnitude."""
+    """Bool (H,W) edge mask from target luminance gradient magnitude.
+
+    Uses a STRICT threshold ``mag > percentile(mag, p)``. Rendered frames have
+    large flat regions, so for high ``p`` the percentile can be 0; a strict
+    comparison then naturally selects only non-zero-gradient (real edge) pixels
+    instead of the whole image (the `>=` bug). If the strict threshold still
+    yields no edge pixels (e.g. the percentile sits at the max), fall back to
+    ``mag > 0`` (any gradient).
+    """
     import numpy as np
 
     r, g, b = target_hwc[..., 0], target_hwc[..., 1], target_hwc[..., 2]
@@ -53,11 +65,19 @@ def _edge_mask(target_hwc, percentile):
     gy, gx = np.gradient(lum)
     mag = np.sqrt(gx * gx + gy * gy)
     thresh = float(np.percentile(mag, percentile))
-    return mag >= thresh
+    mask = mag > thresh
+    if not mask.any():
+        mask = mag > 0.0
+    return mask
 
 
 def _img_metrics(pred_hwc, target_hwc, edge_mask):
-    """L1, PSNR, SSIM, edge-L1, non-edge-L1 for (H,W,C) arrays in [0,1]."""
+    """L1, PSNR, SSIM, edge-L1, non-edge-L1, edge-ratio for (H,W,C) in [0,1].
+
+    edge_l1 is averaged over edge pixels only, nonedge_l1 over the rest. An empty
+    region yields NaN (and a one-time warning) rather than silently folding into
+    the global value.
+    """
     import numpy as np
     from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
@@ -67,9 +87,28 @@ def _img_metrics(pred_hwc, target_hwc, edge_mask):
     ssim = float(structural_similarity(target_hwc, pred_hwc,
                                        channel_axis=2, data_range=1.0))
     per_px = abs_err.mean(axis=2)
-    edge_l1 = float(per_px[edge_mask].mean()) if edge_mask.any() else float("nan")
-    nonedge_l1 = float(per_px[~edge_mask].mean()) if (~edge_mask).any() else float("nan")
-    return l1, psnr, ssim, edge_l1, nonedge_l1
+
+    n_edge = int(edge_mask.sum())
+    n_total = int(edge_mask.size)
+    edge_ratio = n_edge / n_total
+
+    if n_edge > 0:
+        edge_l1 = float(per_px[edge_mask].mean())
+    else:
+        edge_l1 = float("nan")
+        if "no_edge" not in _WARNED:
+            _WARNED.add("no_edge")
+            print("  warning: an image has NO edge pixels; edge_l1=NaN for it.",
+                  file=sys.stderr)
+    if n_edge < n_total:
+        nonedge_l1 = float(per_px[~edge_mask].mean())
+    else:
+        nonedge_l1 = float("nan")
+        if "all_edge" not in _WARNED:
+            _WARNED.add("all_edge")
+            print("  warning: an image is ALL edge pixels; nonedge_l1=NaN for it.",
+                  file=sys.stderr)
+    return l1, psnr, ssim, edge_l1, nonedge_l1, edge_ratio
 
 
 def _load_model(path, builder, device):
@@ -119,6 +158,15 @@ def _save_visual(out_path, target, edge_mask, low_in, err_rgb, err_ra, err_bic,
     for i, t in enumerate(tiles):
         grid.paste(t, ((i % 3) * tw, (i // 3) * th))
     grid.save(out_path)
+
+
+def _save_mask(out_path, edge_mask):
+    """Save the binary edge mask full-res for inspection (white = edge)."""
+    import numpy as np
+    from PIL import Image
+
+    a = (edge_mask.astype("uint8") * 255)
+    Image.fromarray(a, mode="L").save(out_path)
 
 
 def main(argv: list[str]) -> int:
@@ -225,8 +273,11 @@ def main(argv: list[str]) -> int:
     print(f"  methods:  {', '.join(_METHODS)}")
     print(f"  edge pct: {edge_pct}")
 
+    # Per-metric sums AND counts so NaN regions are excluded from means cleanly
+    # (dividing a NaN-skipped sum by the image count was the fake-0 bug).
     acc = {m: {k: 0.0 for k in _METRIC_KEYS} for m in _METHODS}
-    cnt = {m: 0 for m in _METHODS}  # latency timed only on un-warmed iters
+    mcnt = {m: {k: 0 for k in _METRIC_KEYS} for m in _METHODS}
+    nimg = {m: 0 for m in _METHODS}
 
     pf = per_image_path.open("w", newline="")
     pw = csv.writer(pf)
@@ -259,41 +310,43 @@ def main(argv: list[str]) -> int:
             pid, fip = int(meta["path_id"]), int(meta["frame_in_path"])
             for m in _METHODS:
                 pred_hwc = _to_hwc(preds_t[m][0])
-                l1, psnr, ssim, edge_l1, nonedge_l1 = _img_metrics(pred_hwc, target, mask)
+                (l1, psnr, ssim, edge_l1, nonedge_l1,
+                 edge_ratio) = _img_metrics(pred_hwc, target, mask)
                 lp = _lpips(preds_t[m], y_t)
                 lat = secs[m] * 1000.0
                 row = {"l1": l1, "psnr": psnr, "ssim": ssim, "lpips": lp,
-                       "edge_l1": edge_l1, "nonedge_l1": nonedge_l1, "latency_ms": lat}
+                       "edge_l1": edge_l1, "nonedge_l1": nonedge_l1,
+                       "edge_ratio": edge_ratio, "latency_ms": lat}
                 for k, v in row.items():
-                    if v == v:  # skip NaN in means
+                    if v == v:  # finite only; NaN regions don't dilute the mean
                         acc[m][k] += v
-                cnt[m] += 1
-                pw.writerow([i, pid, fip, m,
-                             f"{l1:.6f}", f"{psnr:.4f}", f"{ssim:.6f}",
-                             f"{lp:.6f}", f"{edge_l1:.6f}", f"{nonedge_l1:.6f}",
-                             f"{lat:.4f}"])
+                        mcnt[m][k] += 1
+                nimg[m] += 1
+                pw.writerow([i, pid, fip, m, *(f"{row[k]:.6f}" for k in _METRIC_KEYS)])
 
             if i < num_visuals:
                 low_in = _to_hwc(low[0])
                 emaps = {m: np.clip(np.abs(_to_hwc(preds_t[m][0]) - target).mean(axis=2)
                                     * error_scale, 0.0, 1.0) for m in _METHODS}
-                _save_visual(vis_dir / f"ext_{i:03d}_p{pid}_f{fip}.png",
+                stem = f"ext_{i:03d}_p{pid}_f{fip}"
+                _save_visual(vis_dir / f"{stem}.png",
                              target, mask, low_in,
                              emaps["sr_rgb"], emaps["sr_rendering_aware"], emaps["bicubic"])
+                _save_mask(vis_dir / f"{stem}_edgemask.png", mask)
     pf.close()
 
     sf = summary_path.open("w", newline="")
     sw = csv.writer(sf)
     sw.writerow(["method", "num_images", *(f"{k}_mean" for k in _METRIC_KEYS)])
-    print("  -- mean over split --")
+    print("  -- mean over split (NaN regions excluded per metric) --")
     for m in _METHODS:
-        c = max(1, cnt[m])
-        means = {k: acc[m][k] / c for k in _METRIC_KEYS}
-        sw.writerow([m, cnt[m], *(f"{means[k]:.6f}" for k in _METRIC_KEYS)])
+        means = {k: (acc[m][k] / mcnt[m][k] if mcnt[m][k] else float("nan"))
+                 for k in _METRIC_KEYS}
+        sw.writerow([m, nimg[m], *(f"{means[k]:.6f}" for k in _METRIC_KEYS)])
         print(f"  {m:>20}: L1={means['l1']:.6f} PSNR={means['psnr']:.4f} "
               f"SSIM={means['ssim']:.6f} LPIPS={means['lpips']:.6f} "
               f"edgeL1={means['edge_l1']:.6f} nonedgeL1={means['nonedge_l1']:.6f} "
-              f"lat={means['latency_ms']:.3f}ms")
+              f"edgeRatio={means['edge_ratio']:.4f} lat={means['latency_ms']:.3f}ms")
     sf.close()
 
     print(f"  summary:   {summary_path.resolve()}")
