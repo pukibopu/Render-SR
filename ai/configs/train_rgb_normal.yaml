@@ -1,0 +1,38 @@
+# RGB+normal ablation training config (Phase 5.3).
+#
+# Trains the ablation model SRUNet in_channels=6, input order [R,G,B,Nx,Ny,Nz].
+# Run from the repo root:
+#   python -m ai.tools.train_ablation --config ai/configs/train_rgb_normal.yaml
+#
+# FAIRNESS: every fairness-critical field must match
+# ai/configs/train_rgb_baseline.yaml; the trainer enforces this against
+# `compare.baseline_config`. The only intended differences vs the baseline are
+# input_mode, in_channels, checkpoint/log filenames, and the experiment name.
+
+experiment: rgb_normal
+
+paths:
+  data_root: output_buffers
+  output_dir: results
+  checkpoint_dir: checkpoints
+
+compare:
+  baseline_config: ai/configs/train_rgb_baseline.yaml
+
+dataset:
+  input_mode: rgb_normal          # [R,G,B,Nx,Ny,Nz] -> in_channels=6
+  crop: [128, 256]                # MUST match baseline
+  hflip: true                     # MUST match baseline
+  transform_seed: 0               # MUST match baseline
+  depth_range: null               # MUST match baseline (kept for parity)
+
+train:
+  seed: 0
+  epochs: 50
+  batch_size: 8
+  val_batch_size: 8
+  num_workers: 2
+  lr: 0.0005
+  weight_decay: 0.0001
+  eta_min: 0.00001
+  base: 32
