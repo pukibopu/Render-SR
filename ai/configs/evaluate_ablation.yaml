@@ -1,0 +1,41 @@
+# Ablation evaluation config (Phase 5.4): four input variants + bicubic on the
+# same held-out path-ID test split, same metrics as the fixed Phase 5.2b eval
+# (L1/PSNR/SSIM, optional LPIPS, edge/non-edge L1, edge ratio, latency).
+#
+# Run from the repo root:
+#   python -m ai.tools.evaluate_ablation --config ai/configs/evaluate_ablation.yaml
+#
+# Each model is the SAME shared SRUNet backbone; only in_channels differs (read
+# from input_mode). bicubic is added implicitly as an anchor baseline.
+# 7ch input order stays [R,G,B,depth_norm,Nx,Ny,Nz].
+
+paths:
+  data_root: output_buffers       # renderer output root (contains manifest.json)
+  output_dir: results             # ablation CSVs + visuals/ written here
+
+# Ordered list of model variants. Each: name, checkpoint, input_mode.
+# input_mode -> in_channels: rgb_only=3, rgb_depth=4, rgb_normal=6,
+# rgb_depth_normal=7.
+methods:
+  - name: sr_rgb
+    checkpoint: remote_runs/phase3_3b_rgb_baseline/checkpoints/sr_rgb_best.pt
+    input_mode: rgb_only
+  - name: sr_rgb_depth
+    checkpoint: remote_runs/phase5_3_rgb_depth/checkpoints/sr_rgb_depth_best.pt
+    input_mode: rgb_depth
+  - name: sr_rgb_normal
+    checkpoint: remote_runs/phase5_3_rgb_normal/checkpoints/sr_rgb_normal_best.pt
+    input_mode: rgb_normal
+  - name: sr_rendering_aware
+    checkpoint: remote_runs/phase4_2_rendering_aware/checkpoints/sr_rendering_aware_best.pt
+    input_mode: rgb_depth_normal
+
+eval:
+  split: test                     # held-out path-ID split (same for all methods)
+  depth_range: null               # must match training; null = meta near/far
+  include_bicubic: true           # add a bicubic 2x anchor baseline
+  num_visuals: 4                  # samples to render comparison/edge images for
+  error_scale: 5.0                # amplify abs-error maps (display only)
+  edge_percentile: 90.0           # target-luminance gradient pct -> edge mask
+  lpips_net: alex                 # LPIPS backbone if lpips is installed
+  latency_warmup: 3               # warmup forward passes before timing
