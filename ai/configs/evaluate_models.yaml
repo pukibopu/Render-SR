@@ -1,0 +1,22 @@
+# Unified evaluation config (Phase 5.1): RGB-only vs rendering-aware 7ch.
+#
+# Evaluates BOTH best checkpoints on the same held-out manifest path-ID split
+# (full frame, no crop/flip). Run from the repo root:
+#   python -m ai.tools.evaluate_models --config ai/configs/evaluate_models.yaml
+# Point `data_root` at the directory holding manifest.json on this machine and
+# the checkpoint paths at the trained best checkpoints.
+
+paths:
+  data_root: output_buffers       # renderer output root (contains manifest.json)
+  output_dir: results             # CSVs + visuals/ written here
+
+checkpoints:
+  # Best checkpoints only.
+  rgb_checkpoint: remote_runs/phase3_3b_rgb_baseline/checkpoints/sr_rgb_best.pt
+  rendering_aware_checkpoint: remote_runs/phase4_2_rendering_aware/checkpoints/sr_rendering_aware_best.pt
+
+eval:
+  split: test                     # held-out path-ID split (same for both models)
+  depth_range: null               # must match training; null = meta near/far
+  num_visuals: 4                  # how many samples to render comparison images for
+  error_scale: 5.0                # amplify abs-error maps for visibility (display only)
