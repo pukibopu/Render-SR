@@ -1,0 +1,43 @@
+# RGB-only baseline training config — dataset v2 (Phase 6.2).
+#
+# Same shared SRUNet backbone and identical training recipe as the v1 RGB
+# baseline; only the dataset (output_buffers_v2, 1024 frames, 16 paths) and the
+# v2 output names change. Run via the shared ablation trainer so the checkpoint /
+# log names follow `experiment` (the dedicated v1 baseline trainer hardcodes its
+# names). Run from the repo root:
+#   python -m ai.tools.train_ablation --config ai/configs/train_rgb_baseline_v2.yaml
+#
+# This is the v2 FAIRNESS REFERENCE: the other three v2 configs compare against
+# it. Self-comparison here trivially passes. The v2 path-ID train/test split is
+# read from output_buffers_v2/manifest.json.
+#
+# Kaggle: set data_root to the path from
+#   find /kaggle/input -maxdepth 5 -type d -name "output_buffers_v2"
+
+experiment: rgb_v2                  # -> sr_rgb_v2_{last,best}.pt, train_log_rgb_v2.csv
+
+paths:
+  data_root: output_buffers_v2      # v2 renderer output root (contains manifest.json)
+  output_dir: results
+  checkpoint_dir: checkpoints
+
+compare:
+  baseline_config: ai/configs/train_rgb_baseline_v2.yaml  # self = fairness reference
+
+dataset:
+  input_mode: rgb_only              # [R,G,B] -> in_channels=3
+  crop: [128, 256]                  # low-res paired crop (div. by 4); GPU-safe
+  hflip: true                       # train-time aug (val forces it off)
+  transform_seed: 0
+  depth_range: null                 # rgb_only ignores depth; kept for parity
+
+train:
+  seed: 0
+  epochs: 50
+  batch_size: 8                     # GPU-safe (proven on Kaggle for v1)
+  val_batch_size: 8
+  num_workers: 2
+  lr: 0.0005
+  weight_decay: 0.0001
+  eta_min: 0.00001                  # cosine schedule floor
+  base: 32                          # backbone width

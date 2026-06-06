@@ -1,0 +1,38 @@
+# RGB+depth ablation training config — dataset v2 (Phase 6.2).
+#
+# Trains SRUNet in_channels=4, input order [R,G,B,depth_norm], on dataset v2.
+# Run from the repo root:
+#   python -m ai.tools.train_ablation --config ai/configs/train_rgb_depth_v2.yaml
+#
+# FAIRNESS: every fairness-critical field must match
+# ai/configs/train_rgb_baseline_v2.yaml; the trainer enforces this against
+# `compare.baseline_config`. The only intended differences vs the v2 baseline are
+# input_mode, in_channels, checkpoint/log filenames, and the experiment name.
+
+experiment: rgb_depth_v2            # -> sr_rgb_depth_v2_{last,best}.pt, train_log_rgb_depth_v2.csv
+
+paths:
+  data_root: output_buffers_v2
+  output_dir: results
+  checkpoint_dir: checkpoints
+
+compare:
+  baseline_config: ai/configs/train_rgb_baseline_v2.yaml
+
+dataset:
+  input_mode: rgb_depth             # [R,G,B,depth_norm] -> in_channels=4
+  crop: [128, 256]                  # MUST match v2 baseline
+  hflip: true                       # MUST match v2 baseline
+  transform_seed: 0                 # MUST match v2 baseline
+  depth_range: null                 # MUST match v2 baseline (see Known issues: flat)
+
+train:
+  seed: 0
+  epochs: 50
+  batch_size: 8
+  val_batch_size: 8
+  num_workers: 2
+  lr: 0.0005
+  weight_decay: 0.0001
+  eta_min: 0.00001
+  base: 32
