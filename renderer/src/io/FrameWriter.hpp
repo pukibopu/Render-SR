@@ -65,12 +65,16 @@ struct PathSummary {
     std::string   split;
     std::uint32_t seed;
     int           frames;
+    std::uint32_t scene_variant;   // 0 = fixed base scene, else seeded variant
 };
 
 // Write outRoot/manifest.json: the run parameters, a per-path summary, and one
 // record per frame keyed by (path_id, frame_in_path). The dataset loader keys
-// off this to split train/test by path id, never by frame.
+// off this to split train/test by path id, never by frame. `datasetVersion`
+// records the generation scheme (1 = fixed base scene; 2 = per-path scene
+// variants); `num_paths` and per-path `scene_variant` are written from `paths`.
 void writeManifest(const std::filesystem::path& outRoot,
+                   int datasetVersion,
                    std::uint32_t baseSeed, int framesPerPath,
                    std::uint32_t lowW,  std::uint32_t lowH,
                    std::uint32_t highW, std::uint32_t highH,
