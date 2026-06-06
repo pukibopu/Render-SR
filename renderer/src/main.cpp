@@ -20,8 +20,9 @@ constexpr int kInitialHeight = 720;
 
 struct Args {
     bool headless = false;
-    std::string   paths         = "default";
+    std::string   paths         = "default";  // "default" (v1) | "v2"
     int           framesPerPath = 8;
+    int           numPaths      = 16;          // v2 only
     std::uint32_t seed          = 42;
     std::filesystem::path out = "output_buffers";
     rs::GBufferPass::DebugBlit debugBlit = rs::GBufferPass::DebugBlit::RGB;
@@ -60,18 +61,24 @@ std::optional<rs::GBufferPass::DebugBlit> parseDebugBlit(const char* v) {
 void printUsage(const char* argv0) {
     std::fprintf(stderr,
         "usage: %s [--debug-blit {rgb|depth|normal}]\n"
-        "       %s --headless [--paths default] [--frames-per-path K]\n"
-        "                       [--seed S] [--out PATH]\n"
+        "       %s --headless [--paths {default|v2}] [--num-paths N]\n"
+        "                       [--frames-per-path K] [--seed S] [--out PATH]\n"
         "\n"
         "  --debug-blit       which low-res G-buffer attachment to display on\n"
         "                     screen (defaults to rgb; ignored in headless mode)\n"
         "  --headless         render without a window; write frames to PATH\n"
-        "  --paths NAME       camera path set to render (v1: only 'default')\n"
+        "  --paths NAME       camera path set: 'default' (v1: 4 fixed paths, fixed\n"
+        "                     scene) or 'v2' (N procedural paths, per-path scene\n"
+        "                     variants). Default 'default'.\n"
+        "  --num-paths N      number of paths for --paths v2 (default 16)\n"
         "  --frames-per-path K  frames rendered per camera path (default 8)\n"
         "  --frames K         deprecated alias for --frames-per-path\n"
-        "  --seed S           base seed; same seed reproduces the camera paths\n"
+        "  --seed S           base seed; same seed reproduces the dataset\n"
         "                     (default 42)\n"
-        "  --out PATH         output directory root (defaults to ./output_buffers)\n",
+        "  --out PATH         output directory root (defaults to ./output_buffers)\n"
+        "\n"
+        "  dataset v2 (~1024 frames): --headless --paths v2 --num-paths 16 \\\n"
+        "                             --frames-per-path 64 --seed 42 --out output_buffers_v2\n",
         argv0, argv0);
 }
 
@@ -127,12 +134,16 @@ bool parseArgs(int argc, char** argv, Args& out_args) {
         } else if (a == "--paths") {
             const char* v = next("--paths");
             if (!v) return false;
-            if (std::strcmp(v, "default") != 0) {
+            if (std::strcmp(v, "default") != 0 && std::strcmp(v, "v2") != 0) {
                 std::fprintf(stderr,
-                    "error: --paths only supports 'default' in v1, got '%s'\n", v);
+                    "error: --paths supports 'default' or 'v2', got '%s'\n", v);
                 return false;
             }
             out_args.paths = v;
+        } else if (a == "--num-paths") {
+            const char* v = next("--num-paths");
+            if (!v) return false;
+            if (!parsePositiveInt(v, "--num-paths", out_args.numPaths)) return false;
         } else if (a == "--frames-per-path" || a == "--frames") {
             const char* v = next(a.c_str());
             if (!v) return false;
@@ -160,16 +171,19 @@ int runHeadless(const Args& args) {
     rs::Renderer renderer(nullptr);
     std::printf("Metal device: %s\n", renderer.deviceName());
 
+    const bool isV2 = (args.paths == "v2");
+    const int datasetVersion = isV2 ? 2 : 1;
     std::vector<rs::PathEntry> paths =
-        rs::makeDefaultPathSet(args.framesPerPath, args.seed);
+        isV2 ? rs::makeDatasetV2PathSet(args.numPaths, args.framesPerPath, args.seed)
+             : rs::makeDefaultPathSet(args.framesPerPath, args.seed);
 
     const int totalFrames =
         static_cast<int>(paths.size()) * args.framesPerPath;
-    std::printf("Path set '%s': %zu paths x %d frames = %d frame%s "
+    std::printf("Path set '%s' (dataset v%d): %zu paths x %d frames = %d frame%s "
                 "(seed %u) under: %s\n",
-                args.paths.c_str(), paths.size(), args.framesPerPath,
-                totalFrames, totalFrames == 1 ? "" : "s", args.seed,
-                args.out.string().c_str());
+                args.paths.c_str(), datasetVersion, paths.size(),
+                args.framesPerPath, totalFrames, totalFrames == 1 ? "" : "s",
+                args.seed, args.out.string().c_str());
 
     rs::Camera& cam = renderer.camera();
 
@@ -181,7 +195,11 @@ int runHeadless(const Args& args) {
     for (const rs::PathEntry& entry : paths) {
         const rs::CameraPath& path = *entry.path;
         pathSummaries.push_back(rs::io::PathSummary{
-            entry.id, path.type(), entry.split, path.seed(), path.frameCount()});
+            entry.id, path.type(), entry.split, path.seed(),
+            path.frameCount(), entry.scene_variant});
+
+        // Apply this path's scene variant once before rendering its frames.
+        renderer.setSceneVariant(entry.scene_variant);
 
         for (int f = 0; f < path.frameCount(); ++f) {
             const rs::CameraPose pose = path.poseAt(f);
@@ -192,7 +210,7 @@ int runHeadless(const Args& args) {
         }
     }
 
-    rs::io::writeManifest(args.out, args.seed, args.framesPerPath,
+    rs::io::writeManifest(args.out, datasetVersion, args.seed, args.framesPerPath,
                           renderer.lowResWidth(),  renderer.lowResHeight(),
                           renderer.highResWidth(), renderer.highResHeight(),
                           pathSummaries, manifest);

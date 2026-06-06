@@ -46,6 +46,11 @@ public:
     Camera&       camera()       { return m_camera; }
     const Camera& camera() const { return m_camera; }
 
+    // Select a deterministic scene variant (0 = fixed base scene). Subsequent
+    // frames render this variant's object layout + lighting. Used to give each
+    // dataset-v2 camera path its own scene without rebuilding GPU resources.
+    void setSceneVariant(std::uint32_t seed);
+
     std::uint32_t lowResWidth () const;
     std::uint32_t lowResHeight() const;
     std::uint32_t highResWidth () const;

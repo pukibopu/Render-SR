@@ -25,6 +25,11 @@ float seededUnit(std::uint32_t seed, std::uint32_t stream) {
     return static_cast<float>(h >> 40) / static_cast<float>(1u << 24);
 }
 
+// Deterministic value in [lo, hi) from a seed and a stream selector.
+float seededRange(std::uint32_t seed, std::uint32_t stream, float lo, float hi) {
+    return lo + (hi - lo) * seededUnit(seed, stream);
+}
+
 float lerp(float a, float b, float t) { return a + (b - a) * t; }
 
 }
@@ -95,27 +100,76 @@ std::vector<PathEntry> makeDefaultPathSet(int framesPerPath,
 
     // Two orbits at different radius/height, two dollies in/out. The split
     // holds out one orbit and one dolly entirely for test, so evaluation never
-    // sees a path it trained on.
+    // sees a path it trained on. scene_variant 0 => the fixed base scene.
     set.push_back(PathEntry{
-        0, "train",
+        0, "train", 0u,
         std::make_unique<OrbitPath>(origin, 4.0f, 1.5f,
                                     framesPerPath, derivePathSeed(baseSeed, 0))});
     set.push_back(PathEntry{
-        1, "test",
+        1, "test", 0u,
         std::make_unique<OrbitPath>(origin, 3.6f, 2.4f,
                                     framesPerPath, derivePathSeed(baseSeed, 1))});
     set.push_back(PathEntry{
-        2, "train",
+        2, "train", 0u,
         std::make_unique<DollyPath>(
             CameraPose{origin,  0.6f, 0.30f, 5.5f},
             CameraPose{origin,  0.9f, 0.45f, 2.8f},
             framesPerPath, derivePathSeed(baseSeed, 2))});
     set.push_back(PathEntry{
-        3, "test",
+        3, "test", 0u,
         std::make_unique<DollyPath>(
             CameraPose{origin, -0.8f, 0.50f, 5.0f},
             CameraPose{origin, -0.4f, 0.20f, 3.0f},
             framesPerPath, derivePathSeed(baseSeed, 3))});
+
+    return set;
+}
+
+std::vector<PathEntry> makeDatasetV2PathSet(int numPaths, int framesPerPath,
+                                            std::uint32_t baseSeed) {
+    std::vector<PathEntry> set;
+    set.reserve(static_cast<std::size_t>(numPaths > 0 ? numPaths : 0));
+
+    for (int p = 0; p < numPaths; ++p) {
+        const std::uint32_t s = derivePathSeed(baseSeed, p);
+
+        // A small target jitter so the scene is framed differently per path.
+        const simd_float3 center = simd_make_float3(
+            seededRange(s, 10, -0.5f, 0.5f),
+            seededRange(s, 11, -0.2f, 0.4f),
+            seededRange(s, 12, -0.5f, 0.5f));
+
+        // Scene variant: a distinct, always non-zero seed so every v2 path
+        // perturbs object transforms + light (kept apart from the camera seed).
+        std::uint32_t variant = derivePathSeed(baseSeed ^ 0x5CE7E001u, p);
+        if (variant == 0u) variant = 1u;
+
+        // The split is by path id: hold out every 4th path entirely for test.
+        const char* split = (p % 4 == 3) ? "test" : "train";
+
+        std::unique_ptr<CameraPath> path;
+        if (p % 2 == 0) {
+            // Orbit with seeded radius / height.
+            const float radius = seededRange(s, 1, 3.0f, 5.2f);
+            const float height = seededRange(s, 2, 0.6f, 3.2f);
+            path = std::make_unique<OrbitPath>(center, radius, height,
+                                               framesPerPath, s);
+        } else {
+            // Dolly between two seeded poses (far -> near, swinging azimuth).
+            const float az0   = seededRange(s, 1, -3.14159265f, 3.14159265f);
+            const float azArc = seededRange(s, 2, -1.2f, 1.2f);
+            const float el0   = seededRange(s, 3, 0.15f, 0.6f);
+            const float el1   = seededRange(s, 4, 0.15f, 0.6f);
+            const float dFar  = seededRange(s, 5, 4.6f, 5.6f);
+            const float dNear = seededRange(s, 6, 2.6f, 3.4f);
+            path = std::make_unique<DollyPath>(
+                CameraPose{center, az0,          el0, dFar},
+                CameraPose{center, az0 + azArc,  el1, dNear},
+                framesPerPath, s);
+        }
+
+        set.push_back(PathEntry{p, split, variant, std::move(path)});
+    }
 
     return set;
 }

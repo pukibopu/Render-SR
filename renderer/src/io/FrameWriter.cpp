@@ -129,6 +129,7 @@ void writeFrame(const std::filesystem::path& outRoot,
 }
 
 void writeManifest(const std::filesystem::path& outRoot,
+                   int datasetVersion,
                    std::uint32_t baseSeed, int framesPerPath,
                    std::uint32_t lowW,  std::uint32_t lowH,
                    std::uint32_t highW, std::uint32_t highH,
@@ -141,9 +142,17 @@ void writeManifest(const std::filesystem::path& outRoot,
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) throw std::runtime_error("FrameWriter: failed to open " + path.string());
 
+    // scene_variation is on iff any path carries a non-zero scene variant.
+    bool sceneVariation = false;
+    for (const PathSummary& p : paths)
+        if (p.scene_variant != 0u) { sceneVariation = true; break; }
+
     out << "{\n";
+    out << "  \"dataset_version\": " << datasetVersion << ",\n";
     out << "  \"seed\": "            << baseSeed       << ",\n";
+    out << "  \"num_paths\": "       << paths.size()   << ",\n";
     out << "  \"frames_per_path\": " << framesPerPath  << ",\n";
+    out << "  \"scene_variation\": " << (sceneVariation ? "true" : "false") << ",\n";
     out << "  \"low_res\":  [" << lowW  << ", " << lowH  << "],\n";
     out << "  \"high_res\": [" << highW << ", " << highH << "],\n";
 
@@ -154,7 +163,8 @@ void writeManifest(const std::filesystem::path& outRoot,
             << ", \"type\": \""     << p.type  << "\""
             << ", \"split\": \""    << p.split << "\""
             << ", \"seed\": "       << p.seed
-            << ", \"frames\": "     << p.frames << "}"
+            << ", \"frames\": "     << p.frames
+            << ", \"scene_variant\": " << p.scene_variant << "}"
             << (i + 1 < paths.size() ? "," : "") << "\n";
     }
     out << "  ],\n";

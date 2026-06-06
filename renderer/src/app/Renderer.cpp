@@ -120,6 +120,10 @@ const char* Renderer::deviceName() const {
     return m_device ? m_device->name()->utf8String() : "<null>";
 }
 
+void Renderer::setSceneVariant(std::uint32_t seed) {
+    if (m_scene) m_scene->setVariant(seed);
+}
+
 void Renderer::loadLibrary() {
     const std::string path = executableDir() + "/default.metallib";
     NS::URL* url = NS::URL::fileURLWithPath(nsStr(path.c_str()));
